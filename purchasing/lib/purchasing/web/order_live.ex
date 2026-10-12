@@ -49,7 +49,9 @@ defmodule Bilimbi.SupplyChain.Purchasing.Web.OrderLive do
   def handle_event("dismiss", _params, socket), do: {:noreply, assign(socket, :pending, nil)}
 
   # Each action needs its own capability, read again for every write event.
-  defp permitted?("transition", %{"action" => action}, socket), do: action_allowed?(action, socket)
+  defp permitted?("transition", %{"action" => action}, socket),
+    do: action_allowed?(action, socket)
+
   defp permitted?("confirm", _params, %{assigns: %{pending: nil}}), do: true
 
   defp permitted?("confirm", _params, %{assigns: %{pending: {action, _attrs}}} = socket),
