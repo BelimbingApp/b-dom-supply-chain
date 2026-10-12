@@ -28,7 +28,8 @@ maps; the schemas are private. Attributes take atom or string keys.
 | `submit_order/3`, `send_order/3`, `close_order/4`, `cancel_order/4` | `supply-chain.purchasing.orders.manage` | The buyer's transitions; closing and cancelling need a `reason`, and cancelling after approval also needs the approver's capability |
 | `approve_order/4`, `return_order/4` | `supply-chain.purchasing.orders.approve` | Approves a submitted order, or returns it to draft with a `reason` (not an amended one) |
 | `amend_order/4` | `supply-chain.purchasing.orders.manage` | Records an amendment (`reason`, `lines`, optional header facts) on an approved or sent order; a change to any line sends the order back for approval |
-| `record_receipt/4` | `supply-chain.purchasing.orders.receive` | Adds received quantities to a sent order's lines; a call names each line once |
+| `record_receipt/4` | `supply-chain.purchasing.orders.receive` | Adds received quantities to a sent order's lines, within the ordered quantity plus the `tolerance_percent` the caller states; a call names each line once |
+| `reverse_receipt/4` | `supply-chain.purchasing.orders.receive` | Takes received quantities back with a `reason`; a closed order reopens as partially received |
 
 ## Authorization and company scope
 
@@ -113,10 +114,12 @@ Statuses and transitions:
 | `sent` | `partially_received` | `record_receipt/4` |
 | `sent`, `partially_received` | `closed` | `close_order/4` with a reason, or `record_receipt/4` once every line is received in full |
 | `sent`, `partially_received` | `cancelled` | `cancel_order/4`, also needing the approver's capability |
+| `closed` | `partially_received` | `reverse_receipt/4` with a reason, when a receipt against the order is reversed |
 
-`closed` and `cancelled` are final. Every creation and transition writes a
-history row: the previous and new status, the actor and any impersonator,
-the reason given, and the time the database recorded it.
+`cancelled` is final; `closed` reopens only through a receipt reversal. Every
+creation and transition writes a history row: the previous and new status,
+the actor and any impersonator, the reason given, and the time the database
+recorded it.
 
 A draft changes freely. From submission on, the supplier, currency, and
 request link are fixed, and the header and lines change only as follows:
@@ -147,16 +150,26 @@ request link are fixed, and the header and lines change only as follows:
   cancelling it needs the approver's capability like any approved order.
 - **Receipts.** A sent or partially received order's lines take received
   quantities through `record_receipt/4`, each receipt adding to a current
-  line's `received_quantity`, which never exceeds the ordered one. A call
-  that names the same line twice is refused, so quantities are never
-  silently dropped; the caller sums them first.
+  line's `received_quantity`. A line's received quantity never exceeds the
+  ordered one unless the caller states the company's over-receipt
+  tolerance (`tolerance_percent`, 0 to 100): the ceiling is the ordered
+  quantity raised by that percentage, and a line received up to or over
+  its ordered quantity counts as received in full. A call that names the
+  same line twice is refused, so quantities are never silently dropped; the
+  caller sums them first. `reverse_receipt/4` takes received quantities
+  back with a reason, never below zero; a closed order, whether it closed
+  on a full receipt or short, goes back to `partially_received` with the
+  reason in its history, and is closed again through `close_order/4` or by
+  a receipt that completes it.
 
 ## Seams for later modules
 
-- **Receiving** (goods against an order, matched with the supplier's bill
-  in Finance) calls `record_receipt/4` under
-  `supply-chain.purchasing.orders.receive` and keeps the goods receipt as its
-  own record; Purchasing holds only each line's received quantity.
+- **Receiving** (`receiving/`, goods against an order, matched with the
+  supplier's bill in Finance) calls `record_receipt/4` and
+  `reverse_receipt/4` under `supply-chain.purchasing.orders.receive` and
+  keeps the goods receipt, its rejections, and the company's over-receipt
+  tolerance as its own records; Purchasing holds only each line's received
+  quantity.
 - **Finance payables** matches a bill line to an order line through
   `get_order_line/3` and `find_order_by_number/3`; the line carries the
   order's number, status, supplier, and currency, its quantity, unit price,
@@ -171,8 +184,11 @@ request link are fixed, and the header and lines change only as follows:
 The migration `20261012210000` is `:bilimbi_only` and creates
 `supply_chain_purchasing_suppliers`, `_tax_codes`, `_requests`,
 `_request_lines`, `_request_events`, `_orders`, `_order_amendments`,
-`_order_lines`, and `_order_events`. PostgreSQL enforces the rules the
-facade checks, so no other writer can break them:
+`_order_lines`, and `_order_events`; `20261013100000` (also
+`:bilimbi_only`) lets a line's received quantity exceed the ordered one and
+allows `closed` to `partially_received`, for the Receiving module's
+reversals. PostgreSQL enforces the rules the facade checks, so no other
+writer can break them:
 
 - composite `(id, company_id)` foreign keys keep an order's supplier, tax
   code, request, lines, amendments, and history in one company, and a
@@ -185,17 +201,19 @@ facade checks, so no other writer can break them:
 - a trigger allows only the transitions in the table above, refuses any
   other header change after draft except an amendment that raises
   `amendment_count` by one, and freezes lines after draft except an
-  amendment's additions and supersessions and a receipt's received quantity;
+  amendment's additions and supersessions and a receipt's or reversal's
+  received quantity;
 - deferred constraint triggers refuse a commit in which a request or order
   was created or changed status without a history row written in the same
   transaction, or counted an amendment without its record.
 
-`Bilimbi.SupplyChain.Purchasing.SchemaContract` describes the tables but is
-not registered in the descriptor: compatibility verification runs before
-pending Bilimbi-only migrations, when these tables correctly do not exist.
-`test/schema_contract_test.exs` runs the migration in a fresh database,
+`Bilimbi.SupplyChain.Purchasing.SchemaContract` describes the tables after
+the last migration and lists the migrations, but is not registered in the
+descriptor: compatibility verification runs before pending Bilimbi-only
+migrations, when these tables correctly do not exist.
+`test/schema_contract_test.exs` runs the migrations in a fresh database,
 verifies the contract with `Bilimbi.Base.Database.SchemaVerifier.verify/2`,
-and proves the migration's own triggers outside the test sandbox.
+and proves the migrations' own triggers outside the test sandbox.
 
 ## Standards addressed
 
@@ -206,7 +224,8 @@ and proves the migration's own triggers outside the test sandbox.
   lines were before. Every write also goes through `Bilimbi.Base.Repo`,
   which Base Audit records with its actor in the composed host.
 - **Immutability.** An approved order is fixed except through an amendment
-  record; nothing posted is edited in place.
+  record, and what was received changes only by a receipt or a reversal
+  with its reason; nothing posted is edited in place.
 - **Retention.** Nothing is deleted: the database refuses DELETE and
   TRUNCATE, suppliers and tax codes are deactivated, and unmounting Supply
   Chain keeps every row.
@@ -234,14 +253,15 @@ The Supply chain menu offers three pages to accounts holding
 Irreversible actions wait for confirmation. A page reads the capability
 again for every write-shaped event and refuses one its action does not
 allow, and the facade checks the capability again when the event runs.
-Amendments and receipts have no page yet; callers use the facade.
+Amendments have no page yet; callers use the facade. Receipts are
+recorded on the Receiving module's pages.
 
 ## Tests
 
-Module tests run on temporary copies of the tables built from the
+Module tests run on temporary copies of the tables built from each
 migration's own `statements(:temporary)` in
-`test/support/test_fixtures.ex`, constraints and triggers included, so the
-tables cannot drift from the migration. `setup_purchasing!/0` there builds
+`test/support/test_fixtures.ex`, constraints and triggers included and in
+version order, so the tables cannot drift from the migrations. `setup_purchasing!/0` there builds
 two tenants' companies and an Authz snapshot, and `sign_in!/4` signs a user
 in with direct grants. `web_test/` runs the three pages against the real
 host.

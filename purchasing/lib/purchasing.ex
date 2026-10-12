@@ -25,9 +25,10 @@ defmodule Bilimbi.SupplyChain.Purchasing do
   submission on, an order's header and lines are fixed: an approved or sent
   order changes only through `amend_order/4`, which records an amendment
   and the lines it replaced, and a sent order's lines take received
-  quantities only through `record_receipt/4`. An amendment that changes a
-  line, quantity, price, or tax sends the order back to `submitted` for a
-  fresh approval by someone other than the amender.
+  quantities only through `record_receipt/4` and give them back only
+  through `reverse_receipt/4`. An amendment that changes a line, quantity,
+  price, or tax sends the order back to `submitted` for a fresh approval by
+  someone other than the amender.
 
   Results are plain maps; the schemas stay private to this module. Lines
   carry `line_total` (quantity times unit price) and `tax_amount` (from the
@@ -72,6 +73,7 @@ defmodule Bilimbi.SupplyChain.Purchasing do
 
   @amendable_statuses ~w(approved sent)
   @receivable_statuses ~w(sent partially_received)
+  @reversible_statuses ~w(partially_received closed)
 
   @type refusal :: :unauthorized | :company_not_found
   @type write_refusal :: refusal() | :company_archived
@@ -95,7 +97,7 @@ defmodule Bilimbi.SupplyChain.Purchasing do
   @doc "The capability that approves a submitted purchase order or returns it to draft."
   def approve_orders_capability, do: @approve_orders
 
-  @doc "The capability that records goods received against a sent order; a Receiving module's seam."
+  @doc "The capability that records or reverses goods received against a sent order; a Receiving module's seam."
   def receive_orders_capability, do: @receive_orders
 
   @doc "The statuses a purchase request moves through."
@@ -780,11 +782,14 @@ defmodule Bilimbi.SupplyChain.Purchasing do
   @doc """
   Records goods received against a sent or partially received order:
   `lines`, each `%{line_id, quantity}` adding to that current line's
-  received quantity, which never exceeds the ordered one. A sent order
-  becomes partially received; an order whose current lines are all received
-  in full closes. This is the seam a Receiving module calls; the goods
-  receipt itself, and its match to the supplier's bill, are that module's
-  records.
+  received quantity. A line's received quantity never exceeds the ordered
+  one unless `tolerance_percent` (0 to 100, up to four decimal places,
+  default 0) allows it: the caller states the over-receipt tolerance the
+  company configured, and the ceiling is the ordered quantity raised by that
+  percentage. A sent order becomes partially received; an order whose
+  current lines are all received in full (or over) closes. This is the seam
+  a Receiving module calls; the goods receipt itself, and its match to the
+  supplier's bill, are that module's records.
   """
   @spec record_receipt(Scope.t(), term(), term(), map()) ::
           {:ok, map()}
@@ -794,9 +799,11 @@ defmodule Bilimbi.SupplyChain.Purchasing do
     write(scope, company_id, @receive_orders, fn ->
       with {:ok, order} <- locked_order(scope, company_id, order_id),
            :ok <- require_status(order, @receivable_statuses, "received"),
-           {:ok, lines} <- apply_receipts(order, attributes |> fetch(:lines) |> List.wrap()) do
+           {:ok, tolerance} <- tolerance_option(attributes),
+           {:ok, lines} <-
+             apply_receipts(order, attributes |> fetch(:lines) |> List.wrap(), tolerance) do
         cond do
-          Enum.all?(lines, &Decimal.equal?(&1.received_quantity, &1.quantity)) ->
+          Enum.all?(lines, &(Decimal.compare(&1.received_quantity, &1.quantity) != :lt)) ->
             transition_order(scope, order, "closed", "every line received in full",
               closed_at: DateTime.utc_now()
             )
@@ -807,6 +814,33 @@ defmodule Bilimbi.SupplyChain.Purchasing do
           true ->
             {:ok, full_order_view(scope, reload_order(scope, order))}
         end
+      end
+    end)
+  end
+
+  @doc """
+  Takes back goods recorded as received against a partially received or
+  closed order, when a receipt is reversed: `lines`, each
+  `%{line_id, quantity}` subtracting from that current line's received
+  quantity, which never goes below zero, and a `reason` (required). A
+  closed order goes back to `partially_received` with the reason in its
+  history, whether it closed on a full receipt or short; it is closed again
+  through `close_order/4` or by a receipt that completes it. An order that
+  has received nothing is `{:error, {:invalid_transition, status, "partially_received"}}`.
+  This is the other half of the Receiving module's seam.
+  """
+  @spec reverse_receipt(Scope.t(), term(), term(), map()) ::
+          {:ok, map()}
+          | {:error, write_refusal() | :order_not_found | transition_refusal() | Changeset.t()}
+  def reverse_receipt(%Scope{} = scope, company_id, order_id, attributes)
+      when is_map(attributes) do
+    write(scope, company_id, @receive_orders, fn ->
+      with {:ok, order} <- locked_order(scope, company_id, order_id),
+           :ok <- require_status(order, @reversible_statuses, "partially_received"),
+           {:ok, reason} <- required_reason(attributes),
+           {:ok, order} <- reopen_order(scope, order, reason),
+           {:ok, _lines} <- apply_reversals(order, attributes |> fetch(:lines) |> List.wrap()) do
+        {:ok, full_order_view(scope, reload_order(scope, order))}
       end
     end)
   end
@@ -1121,6 +1155,22 @@ defmodule Bilimbi.SupplyChain.Purchasing do
 
   defp record_order_event(error, _scope, _from, _reason), do: error
 
+  # A closed order takes a reversal only as partially received again; the
+  # lines change after the transition, which the line rules read.
+  defp reopen_order(_scope, %Order{status: "partially_received"} = order, _reason),
+    do: {:ok, order}
+
+  defp reopen_order(scope, %Order{status: "closed"} = order, reason) do
+    order
+    |> Order.transition_changeset("partially_received", closed_at: nil)
+    |> Repo.update()
+    |> record_order_event(scope, "closed", reason)
+    |> case do
+      {:ok, reopened} -> {:ok, %{reopened | lines: order.lines}}
+      error -> error
+    end
+  end
+
   defp insert_amendment(scope, order, attributes) do
     actor = actor(scope)
 
@@ -1192,8 +1242,27 @@ defmodule Bilimbi.SupplyChain.Purchasing do
   defp same_amount?(%Decimal{} = a, %Decimal{} = b), do: Decimal.equal?(a, b)
   defp same_amount?(_a, _b), do: false
 
-  # Each receipt names a current line and adds to what it has received.
-  defp apply_receipts(order, receipts) do
+  # Each receipt names a current line and adds to what it has received, up
+  # to the ordered quantity raised by the tolerance.
+  defp apply_receipts(order, receipts, tolerance) do
+    apply_quantities(order, receipts, fn line, received ->
+      ceiling =
+        line.quantity
+        |> Decimal.mult(Decimal.add(@hundred, tolerance))
+        |> Decimal.div(@hundred)
+
+      OrderLine.receipt_changeset(line, Decimal.add(line.received_quantity, received), ceiling)
+    end)
+  end
+
+  # Each reversal names a current line and takes back part of what it received.
+  defp apply_reversals(order, reversals) do
+    apply_quantities(order, reversals, fn line, received ->
+      OrderLine.reversal_changeset(line, Decimal.sub(line.received_quantity, received))
+    end)
+  end
+
+  defp apply_quantities(order, receipts, change) do
     current = Map.new(order.lines, &{&1.id, &1})
 
     changesets =
@@ -1211,7 +1280,7 @@ defmodule Bilimbi.SupplyChain.Purchasing do
             )
 
           line ->
-            receipt_changeset(line, quantity)
+            quantity_changeset(line, quantity, change)
         end
       end)
 
@@ -1253,18 +1322,41 @@ defmodule Bilimbi.SupplyChain.Purchasing do
     %{order | lines: []} |> Changeset.change() |> Changeset.add_error(:lines, message)
   end
 
-  defp receipt_changeset(line, quantity) do
+  defp quantity_changeset(line, quantity, change) do
     changeset = Changeset.cast(%OrderLine{}, %{quantity: quantity}, [:quantity])
 
     case Changeset.get_change(changeset, :quantity) do
       %Decimal{} = received ->
         if Decimal.gt?(received, 0),
-          do: OrderLine.receipt_changeset(line, Decimal.add(line.received_quantity, received)),
+          do: change.(line, received),
           else: Changeset.add_error(Changeset.change(line), :quantity, "must be greater than 0")
 
       _other ->
         Changeset.add_error(Changeset.change(line), :quantity, "is invalid")
     end
+  end
+
+  # The over-receipt tolerance the caller states: a percentage from 0 to
+  # 100 with up to four decimal places, as a tolerance setting stores it.
+  defp tolerance_option(attributes) do
+    changeset =
+      {%{}, %{tolerance_percent: :decimal}}
+      |> Changeset.cast(%{tolerance_percent: fetch(attributes, :tolerance_percent)}, [
+        :tolerance_percent
+      ])
+      |> Changeset.validate_number(:tolerance_percent,
+        greater_than_or_equal_to: 0,
+        less_than_or_equal_to: 100
+      )
+      |> Changeset.validate_change(:tolerance_percent, fn :tolerance_percent, value ->
+        if Decimal.equal?(Decimal.round(value, 4), value),
+          do: [],
+          else: [tolerance_percent: "has more than 4 decimal places"]
+      end)
+
+    if changeset.valid?,
+      do: {:ok, Changeset.get_field(changeset, :tolerance_percent) || Decimal.new(0)},
+      else: {:error, changeset}
   end
 
   defp locked_order(scope, company_id, order_id) when is_integer(order_id) do

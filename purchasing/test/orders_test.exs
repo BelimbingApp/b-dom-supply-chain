@@ -820,6 +820,161 @@ defmodule Bilimbi.SupplyChain.Purchasing.OrdersTest do
                  lines: [%{line_id: first.id, quantity: "1"}]
                })
     end
+
+    test "exceed the order only within the tolerance the caller states", context do
+      %{buyer: buyer} = context
+      order = sent(context)
+      [first, second] = order.lines
+
+      assert {:error, changeset} =
+               Purchasing.record_receipt(buyer, 73, order.id, %{
+                 lines: [%{line_id: first.id, quantity: "11"}],
+                 tolerance_percent: "5"
+               })
+
+      assert %{lines: [%{received_quantity: ["exceeds the ordered quantity and the tolerance"]}]} =
+               errors_on(changeset)
+
+      for tolerance <- ["-1", "100.5", "1.00001", "x"] do
+        assert {:error, changeset} =
+                 Purchasing.record_receipt(buyer, 73, order.id, %{
+                   lines: [%{line_id: first.id, quantity: "1"}],
+                   tolerance_percent: tolerance
+                 })
+
+        assert %{tolerance_percent: [_]} = errors_on(changeset)
+      end
+
+      # 10 ordered at 10 % tolerance takes 11; the over-received line counts
+      # as received in full, so the order closes with the second line.
+      assert {:ok, %{status: "partially_received", lines: [%{received_quantity: eleven}, _]}} =
+               Purchasing.record_receipt(buyer, 73, order.id, %{
+                 lines: [%{line_id: first.id, quantity: "11"}],
+                 tolerance_percent: "10"
+               })
+
+      assert Decimal.equal?(eleven, "11")
+
+      assert {:ok, %{status: "closed"}} =
+               Purchasing.record_receipt(buyer, 73, order.id, %{
+                 lines: [%{line_id: second.id, quantity: "1"}]
+               })
+    end
+
+    test "are reversed with a reason, reopening a closed order", context do
+      %{first_scope: system, buyer: buyer} = context
+      order = sent(context)
+      [first, second] = order.lines
+
+      # Nothing received yet: there is nothing to reverse.
+      assert {:error, {:invalid_transition, "sent", "partially_received"}} =
+               Purchasing.reverse_receipt(buyer, 73, order.id, %{
+                 reason: "Wrong order",
+                 lines: [%{line_id: first.id, quantity: "1"}]
+               })
+
+      {:ok, %{status: "closed"}} =
+        Purchasing.record_receipt(buyer, 73, order.id, %{
+          lines: [%{line_id: first.id, quantity: "10"}, %{line_id: second.id, quantity: "1"}]
+        })
+
+      assert {:error, changeset} =
+               Purchasing.reverse_receipt(buyer, 73, order.id, %{
+                 lines: [%{line_id: first.id, quantity: "1"}]
+               })
+
+      assert %{reason: ["can't be blank"]} = errors_on(changeset)
+
+      assert {:error, changeset} =
+               Purchasing.reverse_receipt(buyer, 73, order.id, %{
+                 reason: "Counted twice",
+                 lines: [%{line_id: second.id, quantity: "2"}]
+               })
+
+      assert %{lines: [%{received_quantity: ["exceeds what was received"]}]} =
+               errors_on(changeset)
+
+      assert {:ok, %{status: "closed"}} = Purchasing.get_order(buyer, 73, order.id)
+
+      assert {:ok, reopened} =
+               Purchasing.reverse_receipt(buyer, 73, order.id, %{
+                 reason: "Counted twice",
+                 lines: [%{line_id: first.id, quantity: "4"}]
+               })
+
+      assert %{status: "partially_received", closed_at: nil} = reopened
+      assert [%{received_quantity: six}, %{received_quantity: one}] = reopened.lines
+      assert Decimal.equal?(six, "6")
+      assert Decimal.equal?(one, "1")
+
+      assert %{from_status: "closed", to_status: "partially_received", reason: "Counted twice"} =
+               List.last(reopened.events)
+
+      # A partially received order stays so, even when everything goes back.
+      assert {:ok, %{status: "partially_received", events: events} = emptied} =
+               Purchasing.reverse_receipt(buyer, 73, order.id, %{
+                 reason: "Returned to the supplier",
+                 lines: [
+                   %{line_id: first.id, quantity: "6"},
+                   %{line_id: second.id, quantity: "1"}
+                 ]
+               })
+
+      assert length(events) == length(reopened.events)
+      assert Enum.all?(emptied.lines, &Decimal.equal?(&1.received_quantity, 0))
+
+      # A receipt completes it again, and a reversal needs the receiving grant.
+      assert {:ok, %{status: "closed"}} =
+               Purchasing.record_receipt(buyer, 73, order.id, %{
+                 lines: [
+                   %{line_id: first.id, quantity: "10"},
+                   %{line_id: second.id, quantity: "1"}
+                 ]
+               })
+
+      clerk = TestFixtures.sign_in!(system, 73, 94, [@view, @manage])
+
+      assert {:error, :unauthorized} =
+               Purchasing.reverse_receipt(clerk, 73, order.id, %{
+                 reason: "x",
+                 lines: [%{line_id: first.id, quantity: "1"}]
+               })
+
+      # An order closed short reopens the same way.
+      short = sent(context)
+      [line, _] = short.lines
+
+      {:ok, _} =
+        Purchasing.record_receipt(buyer, 73, short.id, %{
+          lines: [%{line_id: line.id, quantity: "2"}]
+        })
+
+      {:ok, %{status: "closed"}} =
+        Purchasing.close_order(buyer, 73, short.id, %{reason: "Supplier cannot deliver the rest"})
+
+      assert {:ok, %{status: "partially_received"}} =
+               Purchasing.reverse_receipt(buyer, 73, short.id, %{
+                 reason: "Damaged on arrival",
+                 lines: [%{line_id: line.id, quantity: "2"}]
+               })
+
+      # Cancelled is final: the database and the facade both refuse.
+      {:ok, _} = Purchasing.cancel_order(context.approver, 73, short.id, %{reason: "Dropped"})
+
+      assert {:error, {:invalid_transition, "cancelled", "partially_received"}} =
+               Purchasing.reverse_receipt(buyer, 73, short.id, %{
+                 reason: "x",
+                 lines: [%{line_id: line.id, quantity: "1"}]
+               })
+
+      assert_raise Postgrex.Error, ~r/does not go from cancelled to partially_received/, fn ->
+        SQL.query!(
+          Repo,
+          "UPDATE supply_chain_purchasing_orders SET status = 'partially_received', cancelled_at = NULL WHERE id = $1",
+          [short.id]
+        )
+      end
+    end
   end
 
   describe "reads" do

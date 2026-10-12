@@ -42,17 +42,22 @@ defmodule Bilimbi.SupplyChain.Purchasing.OrderLine do
     |> validate_scale(:unit_price, 4)
   end
 
-  @doc "Casts a receipt against the line: the new received quantity, within the ordered one."
-  def receipt_changeset(line, received_quantity) do
+  @doc """
+  Casts a receipt against the line: the new received quantity, above what
+  was received before and within the ordered quantity plus the tolerance
+  (`ceiling`).
+  """
+  def receipt_changeset(line, received_quantity, ceiling) do
     line
-    |> cast(%{received_quantity: received_quantity}, [:received_quantity])
-    |> validate_required([:received_quantity])
+    |> received_changeset(received_quantity)
     |> validate_number(:received_quantity, greater_than_or_equal_to: 0)
-    |> validate_scale(:received_quantity, 4)
     |> validate_change(:received_quantity, fn :received_quantity, value ->
       cond do
-        Decimal.gt?(value, line.quantity) ->
+        Decimal.gt?(value, ceiling) and Decimal.equal?(ceiling, line.quantity) ->
           [received_quantity: "exceeds the ordered quantity"]
+
+        Decimal.gt?(value, ceiling) ->
+          [received_quantity: "exceeds the ordered quantity and the tolerance"]
 
         Decimal.lt?(value, line.received_quantity) ->
           [received_quantity: "is below what was already received"]
@@ -61,6 +66,23 @@ defmodule Bilimbi.SupplyChain.Purchasing.OrderLine do
           []
       end
     end)
+  end
+
+  @doc "Casts a reversal against the line: the new received quantity, which stays at or above zero."
+  def reversal_changeset(line, received_quantity) do
+    line
+    |> received_changeset(received_quantity)
+    |> validate_number(:received_quantity,
+      greater_than_or_equal_to: 0,
+      message: "exceeds what was received"
+    )
+  end
+
+  defp received_changeset(line, received_quantity) do
+    line
+    |> cast(%{received_quantity: received_quantity}, [:received_quantity])
+    |> validate_required([:received_quantity])
+    |> validate_scale(:received_quantity, 4)
   end
 
   defp validate_scale(changeset, field, places) do

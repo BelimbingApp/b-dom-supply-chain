@@ -8,14 +8,16 @@ on its own.
 | Module | Descriptor ID | Owns |
 | --- | --- | --- |
 | [`purchasing/`](purchasing/docs/README.md) | `supply_chain/purchasing` | each company's suppliers, tax codes, purchase requests, and purchase orders with lines, approval, amendments, and an audited status history |
+| [`receiving/`](receiving/docs/README.md) | `supply_chain/receiving` | each company's goods receipts against purchase orders: accepted and rejected quantities per order line, posting that updates the order, reversals, the over-receipt tolerance, and the facts Finance matches a supplier's bill against |
 
-Purchasing is the first module. Later Supply Chain modules sit beside it as
-sibling module folders: receiving (goods against a purchase order, matched
-with the supplier's bill in Finance), supplier price lists, sourcing, demand
-planning, and logistics. Each of them, and other Domains such as Finance
-payables, reads purchase orders through `Bilimbi.SupplyChain.Purchasing`'s
-facade; none reads its tables. Inventory stays in the Factory Domain, and
-Purchasing works for a trading company that does not mount Factory: a
+Purchasing is the first module and Receiving the second. Later Supply Chain
+modules sit beside them as sibling module folders: supplier price lists,
+sourcing, demand planning, and logistics. Each of them, and other Domains
+such as Finance payables, reads purchase orders through
+`Bilimbi.SupplyChain.Purchasing`'s facade and goods receipts through
+`Bilimbi.SupplyChain.Receiving`'s; none reads their tables. Inventory stays
+in the Factory Domain, which consumes Receiving's postings when mounted, and
+Supply Chain works for a trading company that does not mount Factory: a
 purchase order line names its item as a description, with an optional
 external item reference the company may point at any catalogue.
 
@@ -38,8 +40,8 @@ composition lock, are in Bilimbi's
 [composition model](https://github.com/BelimbingApp/bilimbi/blob/main/docs/architecture/0010_composition-model.md).
 
 After migrating, the Supply chain menu offers Purchase requests, Purchase
-orders, and Suppliers to accounts holding the purchasing capabilities; the
-Tenant Owner role holds them all.
+orders, Goods receipts, and Suppliers to accounts holding the purchasing and
+receiving capabilities; the Tenant Owner role holds them all.
 
 ## Naming
 

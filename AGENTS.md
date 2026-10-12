@@ -32,11 +32,16 @@ here; they govern this code and are not copied here.
 - Capability keys use the Authz domain `supply-chain` (hyphen): Base Authz's
   `ContributionValidator` refuses an underscore in a capability segment, while
   the container ID and the table prefix stay `supply_chain`.
-- Read and write purchasing records through `Bilimbi.SupplyChain.Purchasing`'s
-  facade, from Supply Chain modules and other Domains alike; never read or
-  write its tables. An approved order changes only through `amend_order/4`, a
-  status only through the transition functions, and received quantities only
-  through `record_receipt/4`, which is the seam a Receiving module calls.
+- Read and write a module's records through its facade
+  (`Bilimbi.SupplyChain.Purchasing`, `Bilimbi.SupplyChain.Receiving`), from
+  Supply Chain modules and other Domains alike; never read or write another
+  module's tables, and never add a foreign key into them (Receiving copies
+  the order facts it needs). An approved order changes only through
+  `amend_order/4`, a status only through the transition functions, and
+  received quantities only through `record_receipt/4` and
+  `reverse_receipt/4`, which Receiving calls at posting and reversal with
+  the same scope, so a receiving actor also holds the purchasing
+  capabilities those need.
 - Authorize every public call inside the facade with
   `Bilimbi.Core.Company.authorize_company_target/3` and the scope it was
   handed, and take `Company.lock_writable_company/2` inside every write's
@@ -50,12 +55,15 @@ here; they govern this code and are not copied here.
   Pass a table name as an argument (`owned_columns("table") |> ...`), never
   as the head of a pipe: Bilimbi's `TenantScopeGateTest` reads a piped string
   literal as an unscoped query over that tenant-owned table.
-- Module tests run against temporary tables in each module's
-  `test/support/test_fixtures.ex`, not its migrations. Mirror a migration's
-  constraints and triggers there, or a test that makes PostgreSQL refuse
-  proves nothing. The sandbox never commits, so a deferred constraint trigger
-  runs only after `check_deferred_constraints!/0`; prove those in the
-  fresh-database contract test.
+- Module tests run against temporary tables that each module's
+  `test/support/test_fixtures.ex` builds from its migrations' own
+  `statements(:temporary)`, in the order `SchemaContract.migrations/0`
+  lists them; never hand-copy DDL into a fixture. A later migration is
+  self-contained (a database that ran the earlier ones loads only its
+  file) and ships its own `statements/1`. The sandbox never commits, so a
+  deferred constraint trigger runs only after `check_deferred_constraints!/0`;
+  prove those in the fresh-database contract test, which also catches an
+  identifier over PostgreSQL's 63 characters.
 - A test that installs a contribution snapshot is `async: false`: the
   snapshot is process-global.
 - A LiveView refuses a write-shaped event with a first `handle_event` deny
