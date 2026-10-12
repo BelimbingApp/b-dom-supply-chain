@@ -14,6 +14,7 @@ defmodule Bilimbi.SupplyChain.Purchasing.Web.Refusals do
   def text(:order_not_found), do: "That purchase order is no longer available."
   def text(:line_not_found), do: "That order line is no longer available."
   def text(:no_lines), do: "Add at least one line first."
+
   def text(:goods_received),
     do: "Goods are received against this order. Reverse the receipts, or close it instead."
 
