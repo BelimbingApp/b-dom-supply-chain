@@ -97,6 +97,27 @@ defmodule BilimbiWeb.SupplyChainRequestsLiveTest do
     assert request_id == request.id
   end
 
+  test "a requester cannot forge a decision, whatever the page was opened with",
+       %{conn: conn, scope: scope} do
+    grant_capabilities!([@view, @manage])
+    requester = TestFixtures.sign_in!(scope, 73, 91, [])
+
+    {:ok, request} =
+      Purchasing.create_request(requester, 73, %{
+        title: "Chairs",
+        lines: [%{description: "Chair", quantity: "1", unit: "unit"}]
+      })
+
+    {:ok, _} = Purchasing.submit_request(requester, 73, request.id)
+    {:ok, view, _html} = conn |> log_in_as() |> live(~p"/supply-chain/purchase-requests")
+    refute has_element?(view, "#decide-#{request.id}")
+
+    forged = %{"request_id" => to_string(request.id), "decision" => "approve"}
+    assert render_hook(view, "decide", forged) =~ "permission to work on purchase requests"
+    refute has_element?(view, "#request-confirm")
+    assert {:ok, %{status: "submitted"}} = Purchasing.get_request(requester, 73, request.id)
+  end
+
   test "a viewer cannot submit a forged write event", %{conn: conn} do
     grant_capabilities!([@view])
     {:ok, view, _html} = conn |> log_in_as() |> live(~p"/supply-chain/purchase-requests")

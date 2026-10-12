@@ -46,20 +46,20 @@ defmodule Bilimbi.SupplyChain.Purchasing.OrdersTest do
             supplier_id: context.supplier.id,
             currency_code: "xts",
             reference: "Q-1",
-            lines: [
-              TestFixtures.line(%{
-                quantity: "10",
-                unit_price: "2.50",
-                tax_code_id: context.tax.id
-              }),
-              TestFixtures.line(%{description: "Second", quantity: "1", unit_price: "100"})
-            ]
+            lines: original_lines(context)
           },
           overrides
         )
       )
 
     order
+  end
+
+  defp original_lines(context) do
+    [
+      TestFixtures.line(%{quantity: "10", unit_price: "2.50", tax_code_id: context.tax.id}),
+      TestFixtures.line(%{description: "Second", quantity: "1", unit_price: "100"})
+    ]
   end
 
   defp approved(context) do
@@ -401,11 +401,9 @@ defmodule Bilimbi.SupplyChain.Purchasing.OrdersTest do
 
       assert {:ok, amended} =
                Purchasing.amend_order(buyer, 73, order.id, %{
-                 reason: "Price agreed lower",
+                 reason: "Delivery date agreed",
                  expected_on: "2026-11-01",
-                 lines: [
-                   TestFixtures.line(%{description: "Agreed", quantity: "10", unit_price: "2"})
-                 ]
+                 lines: original_lines(context)
                })
 
       assert %{
@@ -416,19 +414,19 @@ defmodule Bilimbi.SupplyChain.Purchasing.OrdersTest do
              } =
                amended
 
-      assert [%{line_number: 1, description: "Agreed", amendment_id: amendment_id}] =
+      assert [%{line_number: 1, description: "An item", amendment_id: amendment_id}, _] =
                amended.lines
 
-      assert Decimal.equal?(amended.total, "20")
+      assert Decimal.equal?(amended.total, order.total)
 
       assert [
                %{
                  id: ^amendment_id,
                  amendment_number: 1,
-                 reason: "Price agreed lower",
+                 reason: "Delivery date agreed",
                  amended_by_user_id: 91,
                  occurred_at: %DateTime{},
-                 lines: [%{description: "Agreed"}],
+                 lines: [%{description: "An item"}, %{description: "Second"}],
                  superseded_line_ids: superseded
                }
              ] = amended.amendments
@@ -444,11 +442,37 @@ defmodule Bilimbi.SupplyChain.Purchasing.OrdersTest do
               }} =
                Purchasing.get_order_line(buyer, 73, first.id)
 
-      assert {:ok, %{amendment_count: 2}} =
+      assert {:ok, %{status: "approved", amendment_count: 2}} =
                Purchasing.amend_order(buyer, 73, order.id, %{
                  reason: "Again",
-                 lines: [TestFixtures.line()]
+                 notes: "Call before delivery",
+                 lines: original_lines(context)
                })
+    end
+
+    test "an amendment that changes no line is manage-only, recorded, and keeps the status",
+         context do
+      %{buyer: buyer} = context
+      order = sent(context)
+
+      assert {:ok, %{status: "sent", amendment_count: 1, sent_at: %DateTime{}} = amended} =
+               Purchasing.amend_order(buyer, 73, order.id, %{
+                 reason: "Same lines, scale differs",
+                 lines: [
+                   TestFixtures.line(%{
+                     quantity: "10.0",
+                     unit_price: "2.5",
+                     tax_code_id: context.tax.id
+                   }),
+                   TestFixtures.line(%{
+                     description: "Second",
+                     quantity: "1.00",
+                     unit_price: "100.0"
+                   })
+                 ]
+               })
+
+      assert Enum.map(amended.events, & &1.to_status) == ~w(draft submitted approved sent)
     end
 
     test "a sent order is amended, a partially received one is not", context do
@@ -458,10 +482,10 @@ defmodule Bilimbi.SupplyChain.Purchasing.OrdersTest do
       assert {:ok, %{status: "sent", amendment_count: 1}} =
                Purchasing.amend_order(buyer, 73, order.id, %{
                  reason: "r",
-                 lines: [TestFixtures.line()]
+                 lines: original_lines(context)
                })
 
-      {:ok, %{lines: [line]}} = Purchasing.get_order(buyer, 73, order.id)
+      {:ok, %{lines: [line | _]}} = Purchasing.get_order(buyer, 73, order.id)
 
       {:ok, _} =
         Purchasing.record_receipt(buyer, 73, order.id, %{
@@ -471,7 +495,7 @@ defmodule Bilimbi.SupplyChain.Purchasing.OrdersTest do
       assert {:error, {:invalid_transition, "partially_received", "amended"}} =
                Purchasing.amend_order(buyer, 73, order.id, %{
                  reason: "r",
-                 lines: [TestFixtures.line()]
+                 lines: original_lines(context)
                })
 
       assert {:ok, %{status: "closed", events: events}} =
@@ -521,6 +545,183 @@ defmodule Bilimbi.SupplyChain.Purchasing.OrdersTest do
     end
   end
 
+  describe "amendments that change what was approved" do
+    test "a buyer without the approver's grant cannot change the lines and send the order",
+         context do
+      %{buyer: buyer, approver: approver} = context
+      order = approved(context)
+
+      cheaper =
+        context
+        |> original_lines()
+        |> List.update_at(1, &Map.put(&1, :unit_price, "1"))
+
+      assert {:ok, amended} =
+               Purchasing.amend_order(buyer, 73, order.id, %{
+                 reason: "Cheaper second line",
+                 lines: cheaper
+               })
+
+      assert %{
+               status: "submitted",
+               amendment_count: 1,
+               submitted_by_user_id: 91,
+               approved_by_user_id: nil,
+               approved_at: nil,
+               sent_at: nil
+             } = amended
+
+      assert Decimal.equal?(amended.total, "28.5")
+
+      assert %{from_status: "approved", to_status: "submitted", actor_user_id: 91} =
+               reason_event = List.last(amended.events)
+
+      assert reason_event.reason == "Cheaper second line"
+
+      assert {:error, {:invalid_transition, "submitted", "sent"}} =
+               Purchasing.send_order(buyer, 73, order.id)
+
+      assert {:error, :unauthorized} = Purchasing.approve_order(buyer, 73, order.id, %{})
+
+      assert {:error, {:invalid_transition, "submitted", "draft"}} =
+               Purchasing.return_order(approver, 73, order.id, %{reason: "Redo"})
+
+      assert {:error, :unauthorized} =
+               Purchasing.cancel_order(buyer, 73, order.id, %{reason: "Undo the approval"})
+
+      assert {:ok, %{status: "approved", approved_by_user_id: 92}} =
+               Purchasing.approve_order(approver, 73, order.id, %{reason: "Reviewed the change"})
+
+      assert {:ok, %{status: "sent"}} = Purchasing.send_order(buyer, 73, order.id)
+    end
+
+    test "the amender of an approved order cannot approve their own change", context do
+      %{first_scope: system, approver: approver} = context
+      second_approver = TestFixtures.sign_in!(system, 73, 93, [@view, @manage, @approve])
+      order = approved(context)
+
+      assert {:ok, %{status: "submitted", submitted_by_user_id: 92}} =
+               Purchasing.amend_order(approver, 73, order.id, %{
+                 reason: "More units",
+                 lines: List.update_at(original_lines(context), 0, &Map.put(&1, :quantity, "20"))
+               })
+
+      assert {:error, :own_order} = Purchasing.approve_order(approver, 73, order.id, %{})
+
+      assert {:ok, %{status: "approved", approved_by_user_id: 93}} =
+               Purchasing.approve_order(second_approver, 73, order.id, %{})
+    end
+
+    test "a sent order goes back for approval and is sent again", context do
+      %{buyer: buyer, approver: approver} = context
+      order = sent(context)
+
+      assert {:ok, %{status: "submitted", sent_at: nil}} =
+               Purchasing.amend_order(buyer, 73, order.id, %{
+                 reason: "Other tax code",
+                 lines:
+                   List.update_at(
+                     original_lines(context),
+                     1,
+                     &Map.put(&1, :tax_code_id, context.tax.id)
+                   )
+               })
+
+      assert {:error, {:invalid_transition, "submitted", "received"}} =
+               Purchasing.record_receipt(buyer, 73, order.id, %{
+                 lines: [%{line_id: hd(order.lines).id, quantity: "1"}]
+               })
+
+      assert {:ok, _} = Purchasing.approve_order(approver, 73, order.id, %{})
+
+      assert {:ok, %{status: "sent", sent_at: %DateTime{}} = resent} =
+               Purchasing.send_order(buyer, 73, order.id)
+
+      assert Enum.map(resent.events, &{&1.from_status, &1.to_status}) == [
+               {nil, "draft"},
+               {"draft", "submitted"},
+               {"submitted", "approved"},
+               {"approved", "sent"},
+               {"sent", "submitted"},
+               {"submitted", "approved"},
+               {"approved", "sent"}
+             ]
+    end
+
+    test "every change to a line sends the order back for approval", context do
+      %{buyer: buyer, approver: approver} = context
+
+      changes = [
+        &Map.put(&1, :description, "A different item"),
+        &Map.put(&1, :external_item_ref, "SKU-9"),
+        &Map.put(&1, :unit, "box"),
+        &Map.put(&1, :quantity, "11"),
+        &Map.put(&1, :unit_price, "2.51"),
+        &Map.delete(&1, :tax_code_id)
+      ]
+
+      for change <- changes do
+        order = approved(context)
+
+        assert {:ok, %{status: "submitted"}} =
+                 Purchasing.amend_order(buyer, 73, order.id, %{
+                   reason: "Changed",
+                   lines: List.update_at(original_lines(context), 0, change)
+                 })
+      end
+
+      order = approved(context)
+
+      assert {:ok, %{status: "submitted"}} =
+               Purchasing.amend_order(buyer, 73, order.id, %{
+                 reason: "A line fewer",
+                 lines: Enum.take(original_lines(context), 1)
+               })
+
+      assert {:ok, %{status: "cancelled"}} =
+               Purchasing.cancel_order(approver, 73, order.id, %{reason: "Dropped"})
+    end
+
+    test "the database allows the way back to submitted only with the amendment's record",
+         context do
+      order = approved(context)
+
+      SQL.query!(
+        Repo,
+        "UPDATE supply_chain_purchasing_orders SET status = 'submitted', submitted_by_user_id = 91, submitted_at = now(), approved_by_user_id = NULL, approved_at = NULL WHERE id = $1",
+        [order.id]
+      )
+
+      SQL.query!(
+        Repo,
+        "INSERT INTO supply_chain_purchasing_order_events (tenant_id, company_id, order_id, from_status, to_status, actor_user_id, occurred_at) VALUES (41, 73, $1, 'approved', 'submitted', 91, now())",
+        [order.id]
+      )
+
+      assert_raise Postgrex.Error, ~r/went back to submitted without an amendment/, fn ->
+        TestFixtures.check_deferred_constraints!()
+      end
+    end
+  end
+
+  describe "reasons" do
+    test "are limited by characters, not bytes", context do
+      %{buyer: buyer} = context
+
+      assert {:error, changeset} =
+               Purchasing.cancel_order(buyer, 73, draft(context).id, %{
+                 reason: String.duplicate("あ", 501)
+               })
+
+      assert %{reason: ["should be at most 500 character(s)"]} = errors_on(changeset)
+
+      assert {:ok, %{status: "cancelled"}} =
+               Purchasing.cancel_order(buyer, 73, draft(context).id, %{
+                 reason: String.duplicate("あ", 300)
+               })
+    end
+  end
+
   describe "receipts" do
     test "add up per line, never exceed the order, and need the receiving grant", context do
       %{first_scope: system, buyer: buyer} = context
@@ -543,6 +744,18 @@ defmodule Bilimbi.SupplyChain.Purchasing.OrdersTest do
                })
 
       assert %{lines: [%{line_id: [_]}]} = errors_on(changeset)
+
+      assert {:error, changeset} =
+               Purchasing.record_receipt(buyer, 73, order.id, %{
+                 lines: [%{line_id: first.id, quantity: "3"}, %{line_id: first.id, quantity: "3"}]
+               })
+
+      assert %{lines: ["can name each line only once"]} = errors_on(changeset)
+
+      {:ok, unchanged} = Purchasing.get_order(buyer, 73, order.id)
+      assert [%{received_quantity: zero}, _] = unchanged.lines
+      assert Decimal.equal?(zero, "0")
+      assert %{status: "sent"} = unchanged
 
       {:ok, _} =
         Purchasing.record_receipt(buyer, 73, order.id, %{

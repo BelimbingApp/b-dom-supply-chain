@@ -75,9 +75,11 @@ defmodule Bilimbi.SupplyChain.Purchasing.Migrations.CreatePurchasing do
     {"submitted", "draft"},
     {"submitted", "cancelled"},
     {"approved", "sent"},
+    {"approved", "submitted"},
     {"approved", "cancelled"},
     {"sent", "partially_received"},
     {"sent", "closed"},
+    {"sent", "submitted"},
     {"sent", "cancelled"},
     {"partially_received", "closed"},
     {"partially_received", "cancelled"}
@@ -256,7 +258,7 @@ defmodule Bilimbi.SupplyChain.Purchasing.Migrations.CreatePurchasing do
             AND closed_at IS NULL AND cancelled_at IS NULL AND amendment_count = 0)
           OR (status = 'submitted' AND submitted_by_user_id IS NOT NULL AND submitted_at IS NOT NULL
             AND approved_by_user_id IS NULL AND approved_at IS NULL AND sent_at IS NULL
-            AND closed_at IS NULL AND cancelled_at IS NULL AND amendment_count = 0)
+            AND closed_at IS NULL AND cancelled_at IS NULL)
           OR (status = 'approved' AND submitted_by_user_id IS NOT NULL AND submitted_at IS NOT NULL
             AND approved_by_user_id IS NOT NULL AND approved_at IS NOT NULL AND sent_at IS NULL
             AND closed_at IS NULL AND cancelled_at IS NULL)
@@ -721,6 +723,17 @@ defmodule Bilimbi.SupplyChain.Purchasing.Migrations.CreatePurchasing do
           END IF;
 
           previous := OLD.status;
+
+          IF previous IN ('approved', 'sent') AND NEW.status = 'submitted' THEN
+            IF NOT EXISTS (
+              SELECT 1 FROM supply_chain_purchasing_order_amendments
+              WHERE order_id = NEW.id AND amendment_number = NEW.amendment_count
+                AND occurred_at >= now() AT TIME ZONE 'UTC'
+            ) THEN
+              RAISE EXCEPTION 'purchase order % went back to submitted without an amendment', NEW.id
+                USING ERRCODE = 'check_violation';
+            END IF;
+          END IF;
         END IF;
 
         IF NOT EXISTS (

@@ -232,6 +232,37 @@ defmodule Bilimbi.SupplyChain.Purchasing.RequestsTest do
              Purchasing.create_order_from_request(requester, 73, request.id + 100, %{})
   end
 
+  test "an order shows the number of the request it came from, not the row ID", context do
+    %{first_scope: system, requester: requester, approver: approver} = context
+
+    sibling = TestFixtures.sign_in!(system, 74, 93, [@view, @manage])
+    {:ok, _} = Purchasing.create_request(sibling, 74, %{title: "Sibling's request"})
+
+    request = submitted(context)
+    {:ok, _} = Purchasing.approve_request(approver, 73, request.id, %{})
+
+    {:ok, supplier} =
+      Purchasing.create_supplier(requester, 73, TestFixtures.supplier_attributes(%{code: "s"}))
+
+    assert {:ok, order} =
+             Purchasing.create_order_from_request(requester, 73, request.id, %{
+               supplier_id: supplier.id,
+               currency_code: "XTS"
+             })
+
+    assert request.request_number == 1
+    refute request.id == request.request_number
+    assert %{purchase_request_id: id, purchase_request_number: 1} = order
+    assert id == request.id
+    assert {:ok, [%{purchase_request_number: 1}]} = Purchasing.list_orders(requester, 73)
+    assert {:ok, %{purchase_request_number: 1}} = Purchasing.get_order(requester, 73, order.id)
+
+    {:ok, plain} =
+      Purchasing.create_order(requester, 73, %{supplier_id: supplier.id, currency_code: "XTS"})
+
+    assert %{purchase_request_id: nil, purchase_request_number: nil} = plain
+  end
+
   test "requests belong to one company and reads need the view grant", context do
     %{first_scope: system, requester: requester} = context
     request = draft(context)

@@ -133,4 +133,72 @@ defmodule BilimbiWeb.SupplyChainOrdersLiveTest do
     {:ok, missing, _html} = conn |> log_in_as() |> live(~p"/supply-chain/purchase-orders/999")
     assert has_element?(missing, "#order-missing")
   end
+
+  test "each transition needs its own capability, read again for every event",
+       %{conn: conn, scope: scope, buyer: buyer, supplier: supplier, tax: tax} do
+    {:ok, order} =
+      Purchasing.create_order(buyer, 73, %{
+        supplier_id: supplier.id,
+        currency_code: "XTS",
+        lines: [TestFixtures.line(%{tax_code_id: tax.id})]
+      })
+
+    {:ok, _} = Purchasing.submit_order(buyer, 73, order.id)
+
+    {:ok, show, _html} =
+      conn |> log_in_as() |> live(~p"/supply-chain/purchase-orders/#{order.id}")
+
+    # Holding the manage grant is no authority to approve or return.
+    for action <- ~w(approve return) do
+      assert render_hook(show, "transition", %{"action" => action}) =~
+               "permission to change purchase orders"
+
+      refute has_element?(show, "#order-confirm")
+    end
+
+    # A grant revoked after the page opened stops the next event.
+    grant_capabilities!([@approve])
+
+    {:ok, show, _html} =
+      conn |> log_in_as() |> live(~p"/supply-chain/purchase-orders/#{order.id}")
+
+    assert has_element?(show, "#order-decide")
+
+    TestFixtures.revoke!(scope, 73, 91, @approve)
+
+    assert render_hook(show, "transition", %{"action" => "approve"}) =~
+             "permission to change purchase orders"
+
+    refute has_element?(show, "#order-confirm")
+  end
+
+  test "an amended order shows the request number and offers no return to draft",
+       %{conn: conn, scope: scope, buyer: buyer, supplier: supplier} do
+    approver = TestFixtures.sign_in!(scope, 73, 92, [@view, @manage, @approve])
+
+    {:ok, order} =
+      Purchasing.create_order(buyer, 73, %{
+        supplier_id: supplier.id,
+        currency_code: "XTS",
+        lines: [TestFixtures.line()]
+      })
+
+    {:ok, _} = Purchasing.submit_order(buyer, 73, order.id)
+    {:ok, _} = Purchasing.approve_order(approver, 73, order.id, %{})
+
+    {:ok, _} =
+      Purchasing.amend_order(buyer, 73, order.id, %{
+        reason: "Higher price",
+        lines: [TestFixtures.line(%{unit_price: "3"})]
+      })
+
+    grant_capabilities!([@approve])
+
+    {:ok, show, _html} =
+      conn |> log_in_as() |> live(~p"/supply-chain/purchase-orders/#{order.id}")
+
+    assert has_element?(show, "#order-decide button", "Approve")
+    refute has_element?(show, "#order-decide button", "Return to draft")
+    assert has_element?(show, "#order-amendment-list", "Higher price")
+  end
 end

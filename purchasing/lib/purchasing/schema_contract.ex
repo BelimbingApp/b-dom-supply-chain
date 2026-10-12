@@ -233,7 +233,7 @@ defmodule Bilimbi.SupplyChain.Purchasing.SchemaContract do
                 "AND closed_at IS NULL AND cancelled_at IS NULL AND amendment_count = 0) " <>
                 "OR ((status)::text = 'submitted'::text AND submitted_by_user_id IS NOT NULL " <>
                 "AND submitted_at IS NOT NULL AND approved_by_user_id IS NULL AND approved_at IS NULL " <>
-                "AND sent_at IS NULL AND closed_at IS NULL AND cancelled_at IS NULL AND amendment_count = 0) " <>
+                "AND sent_at IS NULL AND closed_at IS NULL AND cancelled_at IS NULL) " <>
                 "OR ((status)::text = 'approved'::text AND submitted_by_user_id IS NOT NULL " <>
                 "AND submitted_at IS NOT NULL AND approved_by_user_id IS NOT NULL AND approved_at IS NOT NULL " <>
                 "AND sent_at IS NULL AND closed_at IS NULL AND cancelled_at IS NULL) " <>

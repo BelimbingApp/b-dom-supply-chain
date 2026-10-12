@@ -144,6 +144,34 @@ defmodule Bilimbi.SupplyChain.Purchasing.SchemaContractTest do
       query!.("UPDATE supply_chain_purchasing_suppliers SET code = 'S9' WHERE id = 1")
     end
 
+    # An approved order goes back to submitted only with the amendment that
+    # sent it there, written in the same transaction.
+    assert {:ok, _} =
+             in_transaction.([
+               "UPDATE supply_chain_purchasing_orders SET status = 'approved', approved_by_user_id = 2, approved_at = now() WHERE id = 2",
+               event.(2, "'submitted'", "approved")
+             ])
+
+    back_to_submitted =
+      "UPDATE supply_chain_purchasing_orders SET status = 'submitted', submitted_by_user_id = 3, submitted_at = now(), approved_by_user_id = NULL, approved_at = NULL WHERE id = 2"
+
+    assert_raise Postgrex.Error, ~r/went back to submitted without an amendment/, fn ->
+      in_transaction.([back_to_submitted, event.(2, "'approved'", "submitted")])
+    end
+
+    assert {:ok, _} =
+             in_transaction.([
+               "INSERT INTO supply_chain_purchasing_order_amendments (tenant_id, company_id, order_id, reason, amended_by_user_id, occurred_at) VALUES (1, 1, 2, 'Price changed', 3, now())",
+               "UPDATE supply_chain_purchasing_orders SET amendment_count = 1 WHERE id = 2",
+               back_to_submitted,
+               event.(2, "'approved'", "submitted")
+             ])
+
+    assert %{rows: [["submitted", 1]]} =
+             query!.(
+               "SELECT status, amendment_count FROM supply_chain_purchasing_orders WHERE id = 2"
+             )
+
     assert %{rows: [[2]]} = query!.("SELECT count(*) FROM supply_chain_purchasing_orders")
   end
 end

@@ -25,7 +25,9 @@ defmodule Bilimbi.SupplyChain.Purchasing do
   submission on, an order's header and lines are fixed: an approved or sent
   order changes only through `amend_order/4`, which records an amendment
   and the lines it replaced, and a sent order's lines take received
-  quantities only through `record_receipt/4`.
+  quantities only through `record_receipt/4`. An amendment that changes a
+  line, quantity, price, or tax sends the order back to `submitted` for a
+  fresh approval by someone other than the amender.
 
   Results are plain maps; the schemas stay private to this module. Lines
   carry `line_total` (quantity times unit price) and `tax_amount` (from the
@@ -455,7 +457,8 @@ defmodule Bilimbi.SupplyChain.Purchasing do
         |> Repo.all()
 
       suppliers = suppliers_by_id(scope, company_id, Enum.map(orders, & &1.supplier_id))
-      {:ok, Enum.map(orders, &order_view(&1, suppliers, [], []))}
+      numbers = request_numbers(scope, company_id, Enum.map(orders, & &1.purchase_request_id))
+      {:ok, Enum.map(orders, &order_view(&1, suppliers, numbers, [], []))}
     end
   end
 
@@ -651,7 +654,9 @@ defmodule Bilimbi.SupplyChain.Purchasing do
 
   @doc """
   Returns a submitted order to draft so it can be corrected and resubmitted;
-  a `reason` is required.
+  a `reason` is required. An order that was amended keeps its amendment
+  trail, so it is approved or cancelled instead
+  (`{:error, {:invalid_transition, "submitted", "draft"}}`).
   """
   @spec return_order(Scope.t(), term(), term(), map()) ::
           {:ok, map()}
@@ -660,6 +665,7 @@ defmodule Bilimbi.SupplyChain.Purchasing do
     write(scope, company_id, @approve_orders, fn ->
       with {:ok, order} <- locked_order(scope, company_id, order_id),
            :ok <- require_status(order, "submitted", "draft"),
+           :ok <- require_unamended(order, "draft"),
            {:ok, reason} <- required_reason(attributes) do
         transition_order(scope, order, "draft", reason,
           submitted_by_user_id: nil,
@@ -701,7 +707,8 @@ defmodule Bilimbi.SupplyChain.Purchasing do
 
   @doc """
   Cancels an order that is not closed or cancelled; a `reason` is required.
-  Cancelling an approved, sent, or partially received order also needs
+  Cancelling an order that was ever approved (approved, sent, partially
+  received, or resubmitted by an amendment) also needs
   `supply-chain.purchasing.orders.approve`.
   """
   @spec cancel_order(Scope.t(), term(), term(), map()) ::
@@ -731,6 +738,13 @@ defmodule Bilimbi.SupplyChain.Purchasing do
   the amendment that replaced them, so the trail shows what was ordered
   before. A partially received order is closed short or cancelled instead
   (`{:error, {:invalid_transition, status, "amended"}}`).
+
+  An amendment that changes any line (its description, item reference,
+  quantity, unit, unit price, or tax) or the number of lines also returns
+  the order to `submitted`, clearing its approval and sending date: it needs
+  a fresh `approve_order/4` by someone other than the amender before it can
+  be sent. One that changes only `reference`, `notes`, or `expected_on` leaves
+  the status as it is.
   """
   @spec amend_order(Scope.t(), term(), term(), map()) ::
           {:ok, map()}
@@ -743,10 +757,22 @@ defmodule Bilimbi.SupplyChain.Purchasing do
            lines = attributes |> fetch(:lines) |> List.wrap(),
            :ok <- if(lines == [], do: {:error, :no_lines}, else: :ok),
            {:ok, amendment} <- insert_amendment(scope, order, attributes),
-           {:ok, _header} <- amend_header(order, attributes, amendment),
+           {:ok, header} <- amend_header(order, attributes, amendment),
            {:ok, _count} <- supersede_lines(scope, order, amendment),
-           {:ok, _lines} <- insert_lines(scope, company_id, order, lines, amendment.id) do
-        {:ok, full_order_view(scope, reload_order(scope, order))}
+           {:ok, inserted} <- insert_lines(scope, company_id, order, lines, amendment.id) do
+        if lines_changed?(order.lines, inserted) do
+          actor = actor(scope)
+
+          transition_order(scope, header, "submitted", amendment.reason,
+            submitted_by_user_id: actor.user_id,
+            submitted_at: DateTime.utc_now(),
+            approved_by_user_id: nil,
+            approved_at: nil,
+            sent_at: nil
+          )
+        else
+          {:ok, full_order_view(scope, reload_order(scope, order))}
+        end
       end
     end)
   end
@@ -810,7 +836,7 @@ defmodule Bilimbi.SupplyChain.Purchasing do
 
   # Cancelling after approval undoes an approver's decision, so it takes the
   # approver's capability as well.
-  defp authorize_cancellation(_scope, _company_id, %Order{status: status})
+  defp authorize_cancellation(_scope, _company_id, %Order{status: status, amendment_count: 0})
        when status in ["draft", "submitted"],
        do: :ok
 
@@ -1138,10 +1164,33 @@ defmodule Bilimbi.SupplyChain.Purchasing do
           {:error, changeset} -> {:halt, {:error, changeset}}
         end
       end)
+      |> case do
+        {:ok, inserted} -> {:ok, Enum.reverse(inserted)}
+        error -> error
+      end
     else
       {:error, lines_error(order, changesets)}
     end
   end
+
+  # What an approver agreed to: the lines, their quantities, prices, and tax.
+  defp lines_changed?(before, current) do
+    length(before) != length(current) or
+      before |> Enum.zip(current) |> Enum.any?(fn {old, new} -> line_changed?(old, new) end)
+  end
+
+  defp line_changed?(old, new) do
+    terms = [:description, :external_item_ref, :unit, :tax_code_id]
+
+    Map.take(old, terms) != Map.take(new, terms) or
+      not same_amount?(old.quantity, new.quantity) or
+      not same_amount?(old.unit_price, new.unit_price) or
+      not same_amount?(old.tax_rate, new.tax_rate)
+  end
+
+  defp same_amount?(nil, nil), do: true
+  defp same_amount?(%Decimal{} = a, %Decimal{} = b), do: Decimal.equal?(a, b)
+  defp same_amount?(_a, _b), do: false
 
   # Each receipt names a current line and adds to what it has received.
   defp apply_receipts(order, receipts) do
@@ -1168,10 +1217,10 @@ defmodule Bilimbi.SupplyChain.Purchasing do
 
     cond do
       changesets == [] ->
-        {:error,
-         %{order | lines: []}
-         |> Changeset.change()
-         |> Changeset.add_error(:lines, "needs at least one receipt")}
+        {:error, lines_refusal(order, "needs at least one receipt")}
+
+      duplicate_receipts?(receipts) ->
+        {:error, lines_refusal(order, "can name each line only once")}
 
       Enum.all?(changesets, & &1.valid?) ->
         changesets
@@ -1193,6 +1242,15 @@ defmodule Bilimbi.SupplyChain.Purchasing do
       true ->
         {:error, lines_error(order, changesets)}
     end
+  end
+
+  defp duplicate_receipts?(receipts) do
+    line_ids = Enum.map(receipts, &if(is_map(&1), do: fetch(&1, :line_id)))
+    length(line_ids) != length(Enum.uniq(line_ids))
+  end
+
+  defp lines_refusal(order, message) do
+    %{order | lines: []} |> Changeset.change() |> Changeset.add_error(:lines, message)
   end
 
   defp receipt_changeset(line, quantity) do
@@ -1237,6 +1295,7 @@ defmodule Bilimbi.SupplyChain.Purchasing do
 
   defp full_order_view(scope, order) do
     suppliers = suppliers_by_id(scope, order.company_id, [order.supplier_id])
+    numbers = request_numbers(scope, order.company_id, [order.purchase_request_id])
 
     events =
       from(e in Tenancy.scope_query(OrderEvent, scope),
@@ -1246,7 +1305,7 @@ defmodule Bilimbi.SupplyChain.Purchasing do
       |> Repo.all()
       |> Enum.map(&event_view/1)
 
-    order_view(order, suppliers, events, amendment_views(scope, order))
+    order_view(order, suppliers, numbers, events, amendment_views(scope, order))
   end
 
   defp amendment_views(scope, order) do
@@ -1305,6 +1364,11 @@ defmodule Bilimbi.SupplyChain.Purchasing do
     if status in allowed, do: :ok, else: require_status(record, "", target)
   end
 
+  defp require_unamended(%{amendment_count: 0}, _target), do: :ok
+
+  defp require_unamended(%{status: status}, target),
+    do: {:error, {:invalid_transition, status, target}}
+
   defp require_lines(%{lines: []}), do: {:error, :no_lines}
   defp require_lines(_record), do: :ok
 
@@ -1315,11 +1379,8 @@ defmodule Bilimbi.SupplyChain.Purchasing do
           "" ->
             reason_error("can't be blank")
 
-          trimmed when byte_size(trimmed) > 500 ->
-            reason_error("should be at most 500 character(s)")
-
           trimmed ->
-            {:ok, trimmed}
+            bounded_reason(trimmed)
         end
 
       nil ->
@@ -1340,16 +1401,19 @@ defmodule Bilimbi.SupplyChain.Purchasing do
           "" ->
             {:ok, nil}
 
-          trimmed when byte_size(trimmed) > 500 ->
-            reason_error("should be at most 500 character(s)")
-
           trimmed ->
-            {:ok, trimmed}
+            bounded_reason(trimmed)
         end
 
       _other ->
         reason_error("is invalid")
     end
+  end
+
+  defp bounded_reason(reason) do
+    if String.length(reason) > 500,
+      do: reason_error("should be at most 500 character(s)"),
+      else: {:ok, reason}
   end
 
   defp reason_error(message) do
@@ -1396,6 +1460,21 @@ defmodule Bilimbi.SupplyChain.Purchasing do
     |> where([s], s.id in ^Enum.uniq(ids))
     |> Repo.all()
     |> Map.new(&{&1.id, supplier_view(&1)})
+  end
+
+  defp request_numbers(scope, company_id, ids) do
+    case ids |> Enum.reject(&is_nil/1) |> Enum.uniq() do
+      [] ->
+        %{}
+
+      ids ->
+        scope
+        |> requests_query(company_id)
+        |> where([r], r.id in ^ids)
+        |> select([r], {r.id, r.request_number})
+        |> Repo.all()
+        |> Map.new()
+    end
   end
 
   defp tax_codes_query(scope, company_id),
@@ -1494,7 +1573,7 @@ defmodule Bilimbi.SupplyChain.Purchasing do
     |> Map.put(:events, events)
   end
 
-  defp order_view(order, suppliers, events, amendments) do
+  defp order_view(order, suppliers, numbers, events, amendments) do
     lines = Enum.map(order.lines, &line_view/1)
     subtotal = sum(lines, :line_total)
     tax_total = sum(lines, :tax_amount)
@@ -1525,6 +1604,7 @@ defmodule Bilimbi.SupplyChain.Purchasing do
     ])
     |> Map.merge(%{
       supplier: Map.get(suppliers, order.supplier_id),
+      purchase_request_number: Map.get(numbers, order.purchase_request_id),
       lines: lines,
       subtotal: subtotal,
       tax_total: tax_total,

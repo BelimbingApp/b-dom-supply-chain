@@ -38,12 +38,18 @@ defmodule Bilimbi.SupplyChain.Purchasing.Web.OrdersLive do
   end
 
   @impl true
-  def handle_event(event, _params, %{assigns: %{can_manage?: false}} = socket)
-      when event in @write_events do
-    {:noreply, put_flash(socket, :error, "You do not have permission to draft purchase orders.")}
+  def handle_event(event, params, socket) when event in @write_events do
+    socket = assign(socket, :can_manage?, Authz.can(scope(socket), @manage).allowed)
+
+    if socket.assigns.can_manage? do
+      handle_write(event, params, socket)
+    else
+      {:noreply,
+       put_flash(socket, :error, "You do not have permission to draft purchase orders.")}
+    end
   end
 
-  def handle_event("save", %{"order" => params}, socket) do
+  defp handle_write("save", %{"order" => params}, socket) do
     attributes = Map.put(params, "lines", Forms.lines_from_params(params["lines"]))
 
     case Purchasing.create_order(scope(socket), company_id(socket), attributes) do

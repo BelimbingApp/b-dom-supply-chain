@@ -32,27 +32,48 @@ defmodule Bilimbi.SupplyChain.Purchasing.Web.OrderLive do
   end
 
   @impl true
-  def handle_event(
-        event,
-        _params,
-        %{assigns: %{can_manage?: false, can_approve?: false}} = socket
-      )
-      when event in @write_events do
-    {:noreply, put_flash(socket, :error, "You do not have permission to change purchase orders.")}
-  end
+  def handle_event(event, params, socket) when event in @write_events do
+    socket =
+      socket
+      |> assign(:can_manage?, can?(socket, @manage))
+      |> assign(:can_approve?, can?(socket, @approve))
 
-  def handle_event("transition", %{"action" => action} = params, socket)
-      when action in ~w(submit approve return send close cancel) do
-    {:noreply,
-     assign(socket, :pending, {String.to_existing_atom(action), Map.take(params, ["reason"])})}
+    if permitted?(event, params, socket) do
+      handle_write(event, params, socket)
+    else
+      {:noreply,
+       put_flash(socket, :error, "You do not have permission to change purchase orders.")}
+    end
   end
 
   def handle_event("dismiss", _params, socket), do: {:noreply, assign(socket, :pending, nil)}
 
-  def handle_event("confirm", _params, %{assigns: %{pending: nil}} = socket),
+  # Each action needs its own capability, read again for every write event.
+  defp permitted?("transition", %{"action" => action}, socket), do: allowed?(action, socket)
+  defp permitted?("confirm", _params, %{assigns: %{pending: nil}}), do: true
+
+  defp permitted?("confirm", _params, %{assigns: %{pending: {action, _attrs}}} = socket),
+    do: allowed?(Atom.to_string(action), socket)
+
+  defp permitted?(_event, _params, _socket), do: false
+
+  defp allowed?(action, %{assigns: assigns}) when action in ~w(submit send close cancel),
+    do: assigns.can_manage?
+
+  defp allowed?(action, %{assigns: assigns}) when action in ~w(approve return),
+    do: assigns.can_approve?
+
+  defp allowed?(_action, _socket), do: false
+
+  defp handle_write("transition", %{"action" => action} = params, socket) do
+    {:noreply,
+     assign(socket, :pending, {String.to_existing_atom(action), Map.take(params, ["reason"])})}
+  end
+
+  defp handle_write("confirm", _params, %{assigns: %{pending: nil}} = socket),
     do: {:noreply, socket}
 
-  def handle_event("confirm", _params, %{assigns: %{pending: {action, attrs}}} = socket) do
+  defp handle_write("confirm", _params, %{assigns: %{pending: {action, attrs}}} = socket) do
     socket = assign(socket, :pending, nil)
 
     case run(action, attrs, socket) do
@@ -207,7 +228,7 @@ defmodule Bilimbi.SupplyChain.Purchasing.Web.OrderLive do
               </div>
               <div>
                 <dt class="text-xs text-ink-muted">From request</dt><dd>
-                  {@order.purchase_request_id || "—"}
+                  {@order.purchase_request_number || "—"}
                 </dd>
               </div>
               <div>
@@ -286,7 +307,12 @@ defmodule Bilimbi.SupplyChain.Purchasing.Web.OrderLive do
                   class={["w-48", @input]}
                 />
                 <.button type="submit" name="action" value="approve" variant="primary">Approve</.button>
-                <.button type="submit" name="action" value="return">Return to draft</.button>
+                <.button
+                  :if={@order.amendment_count == 0}
+                  type="submit"
+                  name="action"
+                  value="return"
+                >Return to draft</.button>
               </form>
               <.button
                 :if={@can_manage? and @order.status == "approved"}

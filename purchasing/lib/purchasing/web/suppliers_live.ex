@@ -28,12 +28,17 @@ defmodule Bilimbi.SupplyChain.Purchasing.Web.SuppliersLive do
   end
 
   @impl true
-  def handle_event(event, _params, %{assigns: %{can_configure?: false}} = socket)
-      when event in @write_events do
-    {:noreply, put_flash(socket, :error, "You do not have permission to configure purchasing.")}
+  def handle_event(event, params, socket) when event in @write_events do
+    socket = assign(socket, :can_configure?, Authz.can(scope(socket), @configure).allowed)
+
+    if socket.assigns.can_configure? do
+      handle_write(event, params, socket)
+    else
+      {:noreply, put_flash(socket, :error, "You do not have permission to configure purchasing.")}
+    end
   end
 
-  def handle_event("save_supplier", %{"supplier" => params}, socket) do
+  defp handle_write("save_supplier", %{"supplier" => params}, socket) do
     case Purchasing.create_supplier(scope(socket), company_id(socket), params) do
       {:ok, supplier} ->
         {:noreply,
@@ -50,7 +55,7 @@ defmodule Bilimbi.SupplyChain.Purchasing.Web.SuppliersLive do
     end
   end
 
-  def handle_event("toggle_supplier", %{"id" => id, "active" => active}, socket) do
+  defp handle_write("toggle_supplier", %{"id" => id, "active" => active}, socket) do
     socket
     |> write(fn ->
       Purchasing.update_supplier(scope(socket), company_id(socket), Forms.integer(id), %{
@@ -67,7 +72,7 @@ defmodule Bilimbi.SupplyChain.Purchasing.Web.SuppliersLive do
     end
   end
 
-  def handle_event("save_tax_code", %{"tax_code" => params}, socket) do
+  defp handle_write("save_tax_code", %{"tax_code" => params}, socket) do
     case Purchasing.create_tax_code(scope(socket), company_id(socket), params) do
       {:ok, tax_code} ->
         {:noreply,
@@ -84,7 +89,7 @@ defmodule Bilimbi.SupplyChain.Purchasing.Web.SuppliersLive do
     end
   end
 
-  def handle_event("toggle_tax_code", %{"id" => id, "active" => active}, socket) do
+  defp handle_write("toggle_tax_code", %{"id" => id, "active" => active}, socket) do
     socket
     |> write(fn ->
       Purchasing.update_tax_code(scope(socket), company_id(socket), Forms.integer(id), %{

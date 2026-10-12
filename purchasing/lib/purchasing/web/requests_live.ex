@@ -43,17 +43,20 @@ defmodule Bilimbi.SupplyChain.Purchasing.Web.RequestsLive do
   end
 
   @impl true
-  def handle_event(
-        event,
-        _params,
-        %{assigns: %{can_manage?: false, can_approve?: false}} = socket
-      )
-      when event in @write_events do
-    {:noreply,
-     put_flash(socket, :error, "You do not have permission to work on purchase requests.")}
+  def handle_event(event, params, socket) when event in @write_events do
+    socket = assign_capabilities(socket)
+
+    if permitted?(event, socket) do
+      handle_write(event, params, socket)
+    else
+      {:noreply,
+       put_flash(socket, :error, "You do not have permission to work on purchase requests.")}
+    end
   end
 
-  def handle_event("save", %{"request" => params}, socket) do
+  def handle_event("dismiss", _params, socket), do: {:noreply, assign(socket, :pending, nil)}
+
+  defp handle_write("save", %{"request" => params}, socket) do
     attributes = Map.put(params, "lines", Forms.lines_from_params(params["lines"]))
 
     case Purchasing.create_request(scope(socket), company_id(socket), attributes) do
@@ -74,21 +77,21 @@ defmodule Bilimbi.SupplyChain.Purchasing.Web.RequestsLive do
     end
   end
 
-  def handle_event("submit", %{"request_id" => id}, socket) do
+  defp handle_write("submit", %{"request_id" => id}, socket) do
     {:noreply, hold(socket, {:submit, Forms.integer(id), %{}})}
   end
 
-  def handle_event("decide", %{"request_id" => id, "decision" => decision} = params, socket)
-      when decision in ["approve", "reject"] do
+  defp handle_write("decide", %{"request_id" => id, "decision" => decision} = params, socket)
+       when decision in ["approve", "reject"] do
     action = if decision == "approve", do: :approve, else: :reject
     {:noreply, hold(socket, {action, Forms.integer(id), Map.take(params, ["reason"])})}
   end
 
-  def handle_event("cancel", %{"request_id" => id} = params, socket) do
+  defp handle_write("cancel", %{"request_id" => id} = params, socket) do
     {:noreply, hold(socket, {:cancel, Forms.integer(id), Map.take(params, ["reason"])})}
   end
 
-  def handle_event("create_order", %{"request_id" => id} = params, socket) do
+  defp handle_write("create_order", %{"request_id" => id} = params, socket) do
     attributes = Map.take(params, ["supplier_id", "currency_code"])
 
     case Purchasing.create_order_from_request(
@@ -108,12 +111,10 @@ defmodule Bilimbi.SupplyChain.Purchasing.Web.RequestsLive do
     end
   end
 
-  def handle_event("dismiss", _params, socket), do: {:noreply, assign(socket, :pending, nil)}
-
-  def handle_event("confirm", _params, %{assigns: %{pending: nil}} = socket),
+  defp handle_write("confirm", _params, %{assigns: %{pending: nil}} = socket),
     do: {:noreply, socket}
 
-  def handle_event("confirm", _params, %{assigns: %{pending: pending}} = socket) do
+  defp handle_write("confirm", _params, %{assigns: %{pending: pending}} = socket) do
     socket = assign(socket, :pending, nil)
 
     case run(pending, socket) do
@@ -124,6 +125,28 @@ defmodule Bilimbi.SupplyChain.Purchasing.Web.RequestsLive do
         {:noreply, socket |> load() |> put_flash(:error, Refusals.text(reason))}
     end
   end
+
+  # The capability is read again for every write event; the facade checks it a
+  # third time when the write runs.
+  defp assign_capabilities(socket) do
+    socket
+    |> assign(:can_manage?, can?(socket, @manage))
+    |> assign(:can_approve?, can?(socket, @approve))
+    |> assign(:can_order?, can?(socket, @manage_orders))
+  end
+
+  defp permitted?(event, %{assigns: assigns}) when event in ~w(save submit cancel),
+    do: assigns.can_manage?
+
+  defp permitted?("decide", %{assigns: assigns}), do: assigns.can_approve?
+  defp permitted?("create_order", %{assigns: assigns}), do: assigns.can_order?
+  defp permitted?("confirm", %{assigns: %{pending: nil}}), do: true
+
+  defp permitted?("confirm", %{assigns: %{pending: {action, _id, _attrs}} = assigns})
+       when action in [:submit, :cancel],
+       do: assigns.can_manage?
+
+  defp permitted?("confirm", %{assigns: assigns}), do: assigns.can_approve?
 
   # A held action is confirmed before it runs; the facade authorizes it for
   # the scope's actor when it runs and records who performed it.
@@ -184,26 +207,33 @@ defmodule Bilimbi.SupplyChain.Purchasing.Web.RequestsLive do
     )
   end
 
-  defp pending_text({:submit, id, _attrs}),
+  defp pending_text({:submit, id, _attrs}, requests),
     do:
-      {"Purchase request #{id} will be submitted for approval.",
+      {"#{subject(requests, id)} will be submitted for approval.",
        "Its title and lines are fixed from then on; an approver decides it.", "Submit",
        "Submitting…"}
 
-  defp pending_text({:approve, id, _attrs}),
+  defp pending_text({:approve, id, _attrs}, requests),
     do:
-      {"Purchase request #{id} will be approved.",
+      {"#{subject(requests, id)} will be approved.",
        "The decision is recorded with your name and cannot be undone.", "Approve", "Approving…"}
 
-  defp pending_text({:reject, id, _attrs}),
+  defp pending_text({:reject, id, _attrs}, requests),
     do:
-      {"Purchase request #{id} will be rejected.",
+      {"#{subject(requests, id)} will be rejected.",
        "The requester sees your reason. This cannot be undone.", "Reject", "Rejecting…"}
 
-  defp pending_text({:cancel, id, _attrs}),
+  defp pending_text({:cancel, id, _attrs}, requests),
     do:
-      {"Purchase request #{id} will be cancelled.",
+      {"#{subject(requests, id)} will be cancelled.",
        "It keeps its number and history. This cannot be undone.", "Cancel request", "Cancelling…"}
+
+  defp subject(requests, id) do
+    case Enum.find(requests, &(&1.id == id)) do
+      %{request_number: number} -> "Purchase request #{number}"
+      nil -> "This purchase request"
+    end
+  end
 
   defp can?(socket, capability), do: Authz.can(scope(socket), capability).allowed
   defp scope(socket), do: socket.assigns.current_scope.scope
@@ -387,10 +417,10 @@ defmodule Bilimbi.SupplyChain.Purchasing.Web.RequestsLive do
         <.confirm_dialog
           :if={@pending}
           id="request-confirm"
-          consequence={elem(pending_text(@pending), 0)}
-          detail={elem(pending_text(@pending), 1)}
-          confirm={elem(pending_text(@pending), 2)}
-          working={elem(pending_text(@pending), 3)}
+          consequence={elem(pending_text(@pending, @requests), 0)}
+          detail={elem(pending_text(@pending, @requests), 1)}
+          confirm={elem(pending_text(@pending, @requests), 2)}
+          working={elem(pending_text(@pending, @requests), 3)}
           on_confirm={JS.push("confirm")}
           on_cancel={JS.push("dismiss")}
         />

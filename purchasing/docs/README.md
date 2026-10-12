@@ -22,13 +22,13 @@ maps; the schemas are private. Attributes take atom or string keys.
 | `submit_request/3`, `cancel_request/4` | `supply-chain.purchasing.requests.manage` | Submits a draft; cancels a draft, submitted, or approved request with a `reason` |
 | `approve_request/4`, `reject_request/4` | `supply-chain.purchasing.requests.approve` | Decides a submitted request; rejection needs a `reason` |
 | `create_order_from_request/4` | `supply-chain.purchasing.orders.manage` | Drafts an order from an approved request, copying its lines unpriced unless `lines` is given |
-| `list_orders/3`, `get_order/3`, `find_order_by_number/3` | `supply-chain.purchasing.view` | Orders with current lines and totals; the single reads add history and amendments |
+| `list_orders/3`, `get_order/3`, `find_order_by_number/3` | `supply-chain.purchasing.view` | Orders with current lines and totals, and the number of the request they came from (`purchase_request_number`); the single reads add history and amendments |
 | `get_order_line/3` | `supply-chain.purchasing.view` | One line, current or superseded, with its order's number, status, supplier, and currency |
 | `create_order/3`, `update_order/4` | `supply-chain.purchasing.orders.manage` | A draft order: `supplier_id`, `currency_code`, `reference`, `notes`, `expected_on`, `lines` |
 | `submit_order/3`, `send_order/3`, `close_order/4`, `cancel_order/4` | `supply-chain.purchasing.orders.manage` | The buyer's transitions; closing and cancelling need a `reason`, and cancelling after approval also needs the approver's capability |
-| `approve_order/4`, `return_order/4` | `supply-chain.purchasing.orders.approve` | Approves a submitted order, or returns it to draft with a `reason` |
-| `amend_order/4` | `supply-chain.purchasing.orders.manage` | Records an amendment (`reason`, `lines`, optional header facts) on an approved or sent order |
-| `record_receipt/4` | `supply-chain.purchasing.orders.receive` | Adds received quantities to a sent order's lines |
+| `approve_order/4`, `return_order/4` | `supply-chain.purchasing.orders.approve` | Approves a submitted order, or returns it to draft with a `reason` (not an amended one) |
+| `amend_order/4` | `supply-chain.purchasing.orders.manage` | Records an amendment (`reason`, `lines`, optional header facts) on an approved or sent order; a change to any line sends the order back for approval |
+| `record_receipt/4` | `supply-chain.purchasing.orders.receive` | Adds received quantities to a sent order's lines; a call names each line once |
 
 ## Authorization and company scope
 
@@ -105,9 +105,10 @@ Statuses and transitions:
 | `draft` | `submitted` | `submit_order/3`; needs a line and an active supplier |
 | `draft` | `cancelled` | `cancel_order/4` |
 | `submitted` | `approved` | `approve_order/4`, by someone else |
-| `submitted` | `draft` | `return_order/4` with a reason |
-| `submitted` | `cancelled` | `cancel_order/4` |
+| `submitted` | `draft` | `return_order/4` with a reason, for an order never amended |
+| `submitted` | `cancelled` | `cancel_order/4`; also needing the approver's capability once the order was amended |
 | `approved` | `sent` | `send_order/3` |
+| `approved`, `sent` | `submitted` | `amend_order/4` when the amendment changes a line; approved again by someone other than the amender |
 | `approved` | `cancelled` | `cancel_order/4`, also needing the approver's capability |
 | `sent` | `partially_received` | `record_receipt/4` |
 | `sent`, `partially_received` | `closed` | `close_order/4` with a reason, or `record_receipt/4` once every line is received in full |
@@ -129,9 +130,26 @@ request link are fixed, and the header and lines change only as follows:
   lines it added and the IDs of those it replaced, and `get_order_line/3`
   still reads a superseded line. A partially received order is not amended;
   it is closed short or cancelled.
+
+  An amendment is manage-only when it changes no line: a new `reference`,
+  `notes`, or `expected_on` with the same lines (same description, item
+  reference, quantity, unit, unit price, and tax) leaves the status as it
+  is. An amendment that changes any line, or the number of lines, returns the
+  order to `submitted` in the same transaction: its approval and sending
+  date are cleared, the amender becomes its submitter, and the history shows
+  the move with the amendment's reason. It then needs a fresh
+  `approve_order/4` by someone holding `orders.approve` other than the
+  amender, and `send_order/3` after that, so no one can change what an
+  approver agreed to and send it without an approver's decision. The
+  database allows `approved` or `sent` to `submitted` only with that
+  amendment's record. An amended order keeps its amendment trail, so the
+  approver approves or cancels it; it does not return to draft, and
+  cancelling it needs the approver's capability like any approved order.
 - **Receipts.** A sent or partially received order's lines take received
   quantities through `record_receipt/4`, each receipt adding to a current
-  line's `received_quantity`, which never exceeds the ordered one.
+  line's `received_quantity`, which never exceeds the ordered one. A call
+  that names the same line twice is refused, so quantities are never
+  silently dropped; the caller sums them first.
 
 ## Seams for later modules
 
@@ -194,7 +212,8 @@ and proves the migration's own triggers outside the test sandbox.
   Chain keeps every row.
 - **Gapless numbering.** Each company's requests and orders are numbered in
   creation order without gaps; a refused or rolled-back creation takes none.
-- **Separation of duties.** An approver is not the submitter.
+- **Separation of duties.** An approver is not the submitter, including
+  the person who amended an order back to `submitted`.
 
 ## Pages and menu
 
@@ -212,9 +231,9 @@ The Supply chain menu offers three pages to accounts holding
   page (`/supply-chain/purchase-orders/:id`) shows its lines, totals,
   history, and amendments, and offers the transitions its status allows.
 
-Irreversible actions wait for confirmation. A page refuses a write-shaped
-event it does not offer, and the facade checks the capability again when
-the event runs. Amendments and receipts have no page yet; callers use the
+Irreversible actions wait for confirmation. A page reads the capability
+again for every write-shaped event and refuses one its action does not
+allow, and the facade checks the capability again when the event runs. Amendments and receipts have no page yet; callers use the
 facade.
 
 ## Tests
