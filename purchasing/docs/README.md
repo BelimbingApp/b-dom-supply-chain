@@ -233,8 +233,8 @@ The Supply chain menu offers three pages to accounts holding
 
 Irreversible actions wait for confirmation. A page reads the capability
 again for every write-shaped event and refuses one its action does not
-allow, and the facade checks the capability again when the event runs. Amendments and receipts have no page yet; callers use the
-facade.
+allow, and the facade checks the capability again when the event runs.
+Amendments and receipts have no page yet; callers use the facade.
 
 ## Tests
 
