@@ -94,7 +94,8 @@ defmodule Bilimbi.SupplyChain.Receiving.SchemaContractTest do
              query!.("SELECT id, receipt_number FROM supply_chain_receiving_receipts ORDER BY id")
 
     # A transition needs its history row and must be one the table allows.
-    post = "UPDATE supply_chain_receiving_receipts SET status = 'posted', posted_by_user_id = 1, posted_at = now() WHERE id = 2"
+    post =
+      "UPDATE supply_chain_receiving_receipts SET status = 'posted', posted_by_user_id = 1, posted_at = now() WHERE id = 2"
 
     assert_raise Postgrex.Error, ~r/without a history row/, fn -> in_transaction.([post]) end
 
@@ -116,7 +117,9 @@ defmodule Bilimbi.SupplyChain.Receiving.SchemaContractTest do
     end
 
     assert_raise Postgrex.Error, ~r/its lines are fixed/, fn ->
-      query!.("UPDATE supply_chain_receiving_receipt_lines SET received_quantity = 5 WHERE receipt_id = 2")
+      query!.(
+        "UPDATE supply_chain_receiving_receipt_lines SET received_quantity = 5 WHERE receipt_id = 2"
+      )
     end
 
     assert_raise Postgrex.Error, ~r/its lines are fixed/, fn -> query!.(line.(2, 2)) end

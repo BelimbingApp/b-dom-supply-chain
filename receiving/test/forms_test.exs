@@ -6,7 +6,11 @@ defmodule Bilimbi.SupplyChain.Receiving.Web.FormsTest do
   describe "lines_from_params/1" do
     test "keys rows by order line, in order, and leaves out rows without a quantity" do
       lines = %{
-        "30" => %{"received_quantity" => "", "rejected_quantity" => "2", "rejection_reason" => "x"},
+        "30" => %{
+          "received_quantity" => "",
+          "rejected_quantity" => "2",
+          "rejection_reason" => "x"
+        },
         "12" => %{"received_quantity" => "4", "rejected_quantity" => ""},
         "7" => %{"received_quantity" => " ", "rejected_quantity" => "", "rejection_reason" => "y"},
         "abc" => %{"received_quantity" => "9"}
