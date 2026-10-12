@@ -20,9 +20,9 @@ defmodule Bilimbi.SupplyChain.Purchasing.Web.Forms do
   def lines_from_params(nil), do: []
 
   def lines_from_params(lines) when is_map(lines) do
-    lines
-    |> Enum.sort_by(fn {index, _row} -> String.to_integer(index) end)
-    |> Enum.map(fn {_index, row} -> row end)
+    for({index, row} <- lines, position = integer(index), do: {position, row})
+    |> Enum.sort_by(fn {position, _row} -> position end)
+    |> Enum.map(fn {_position, row} -> row end)
     |> Enum.reject(&(String.trim(Map.get(&1, "description", "")) == ""))
   end
 
