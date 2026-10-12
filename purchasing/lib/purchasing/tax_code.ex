@@ -20,7 +20,7 @@ defmodule Bilimbi.SupplyChain.Purchasing.TaxCode do
     |> cast(attributes, [:code], empty_values: [""])
     |> update_change(:code, &String.trim/1)
     |> validate_required([:tenant_id, :company_id, :code])
-    |> validate_length(:code, min: 1, max: 20)
+    |> validate_length(:code, min: 1, max: 20, count: :codepoints)
     |> details(attributes)
     |> unique_constraint(:code, name: :supply_chain_purchasing_tax_codes_company_code_unique)
   end
@@ -34,7 +34,7 @@ defmodule Bilimbi.SupplyChain.Purchasing.TaxCode do
     |> cast(attributes, [:name, :rate, :active], empty_values: [""])
     |> update_change(:name, &String.trim/1)
     |> validate_required([:name, :rate, :active])
-    |> validate_length(:name, min: 1, max: 120)
+    |> validate_length(:name, min: 1, max: 120, count: :codepoints)
     |> validate_number(:rate, greater_than_or_equal_to: 0, less_than_or_equal_to: 100)
     |> validate_scale(:rate, 4)
   end

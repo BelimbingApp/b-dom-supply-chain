@@ -21,6 +21,6 @@ defmodule Bilimbi.SupplyChain.Purchasing.OrderAmendment do
     |> cast(attributes, [:reason], empty_values: [""])
     |> update_change(:reason, &String.trim/1)
     |> validate_required([:tenant_id, :company_id, :order_id, :reason, :amended_by_user_id])
-    |> validate_length(:reason, min: 1, max: 500)
+    |> validate_length(:reason, min: 1, max: 500, count: :codepoints)
   end
 end

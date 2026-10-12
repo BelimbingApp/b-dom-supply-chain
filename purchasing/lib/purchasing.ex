@@ -1411,7 +1411,7 @@ defmodule Bilimbi.SupplyChain.Purchasing do
   end
 
   defp bounded_reason(reason) do
-    if String.length(reason) > 500,
+    if length(String.codepoints(reason)) > 500,
       do: reason_error("should be at most 500 character(s)"),
       else: {:ok, reason}
   end

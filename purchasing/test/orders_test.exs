@@ -722,6 +722,44 @@ defmodule Bilimbi.SupplyChain.Purchasing.OrdersTest do
     end
   end
 
+  describe "text bounds" do
+    test "count codepoints, as the varchar columns do, so a refusal is an error not a crash",
+         context do
+      %{buyer: buyer} = context
+      combining = String.duplicate("e\u0301", 300)
+
+      assert {:error, changeset} =
+               Purchasing.cancel_order(buyer, 73, draft(context).id, %{reason: combining})
+
+      assert %{reason: ["should be at most 500 character(s)"]} = errors_on(changeset)
+
+      assert {:error, changeset} =
+               Purchasing.create_order(buyer, 73, %{
+                 supplier_id: context.supplier.id,
+                 currency_code: "XTS",
+                 reference: String.duplicate("e\u0301", 60),
+                 notes: String.duplicate("e\u0301", 600),
+                 lines: [TestFixtures.line(%{description: combining})]
+               })
+
+      assert %{
+               reference: [_],
+               notes: [_],
+               lines: [%{description: ["should be at most 500 character(s)"]}]
+             } = errors_on(changeset)
+
+      order = approved(context)
+
+      assert {:error, changeset} =
+               Purchasing.amend_order(buyer, 73, order.id, %{
+                 reason: combining,
+                 lines: original_lines(context)
+               })
+
+      assert %{reason: [_]} = errors_on(changeset)
+    end
+  end
+
   describe "receipts" do
     test "add up per line, never exceed the order, and need the receiving grant", context do
       %{first_scope: system, buyer: buyer} = context

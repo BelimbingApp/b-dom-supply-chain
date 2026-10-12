@@ -24,9 +24,9 @@ defmodule Bilimbi.SupplyChain.Purchasing.RequestLine do
     |> update_change(:external_item_ref, &trim_to_nil/1)
     |> update_change(:unit, &String.trim/1)
     |> validate_required([:line_number, :description, :quantity, :unit])
-    |> validate_length(:description, min: 1, max: 500)
-    |> validate_length(:external_item_ref, max: 100)
-    |> validate_length(:unit, min: 1, max: 20)
+    |> validate_length(:description, min: 1, max: 500, count: :codepoints)
+    |> validate_length(:external_item_ref, max: 100, count: :codepoints)
+    |> validate_length(:unit, min: 1, max: 20, count: :codepoints)
     |> validate_number(:quantity, greater_than: 0, less_than: @quantity_limit)
     |> validate_scale(:quantity, 4)
   end

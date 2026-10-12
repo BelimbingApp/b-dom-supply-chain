@@ -36,8 +36,8 @@ defmodule Bilimbi.SupplyChain.Purchasing.Request do
     |> update_change(:title, &String.trim/1)
     |> update_change(:justification, &trim_to_nil/1)
     |> validate_required([:tenant_id, :company_id, :title, :created_by_user_id])
-    |> validate_length(:title, min: 1, max: 200)
-    |> validate_length(:justification, max: 1000)
+    |> validate_length(:title, min: 1, max: 200, count: :codepoints)
+    |> validate_length(:justification, max: 1000, count: :codepoints)
   end
 
   def transition_changeset(request, status, changes) do
@@ -45,7 +45,7 @@ defmodule Bilimbi.SupplyChain.Purchasing.Request do
     |> change(changes)
     |> put_change(:status, status)
     |> validate_inclusion(:status, @statuses)
-    |> validate_length(:decision_reason, max: 500)
+    |> validate_length(:decision_reason, max: 500, count: :codepoints)
   end
 
   defp trim_to_nil(value) when is_binary(value) do

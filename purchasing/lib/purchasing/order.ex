@@ -58,8 +58,8 @@ defmodule Bilimbi.SupplyChain.Purchasing.Order do
     |> cast(attributes, [:reference, :notes, :expected_on], empty_values: [""])
     |> update_change(:reference, &trim_to_nil/1)
     |> update_change(:notes, &trim_to_nil/1)
-    |> validate_length(:reference, max: 100)
-    |> validate_length(:notes, max: 1000)
+    |> validate_length(:reference, max: 100, count: :codepoints)
+    |> validate_length(:notes, max: 1000, count: :codepoints)
   end
 
   def transition_changeset(order, status, changes) do
