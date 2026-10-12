@@ -25,7 +25,7 @@ maps; the schemas are private. Attributes take atom or string keys.
 | `list_orders/3`, `get_order/3`, `find_order_by_number/3` | `supply-chain.purchasing.view` | Orders with current lines and totals, and the number of the request they came from (`purchase_request_number`); the single reads add history and amendments |
 | `get_order_line/3` | `supply-chain.purchasing.view` | One line, current or superseded, with its order's number, status, supplier, and currency |
 | `create_order/3`, `update_order/4` | `supply-chain.purchasing.orders.manage` | A draft order: `supplier_id`, `currency_code`, `reference`, `notes`, `expected_on`, `lines` |
-| `submit_order/3`, `send_order/3`, `close_order/4`, `cancel_order/4` | `supply-chain.purchasing.orders.manage` | The buyer's transitions; closing and cancelling need a `reason`, and cancelling after approval also needs the approver's capability |
+| `submit_order/3`, `send_order/3`, `close_order/4`, `cancel_order/4` | `supply-chain.purchasing.orders.manage` | The buyer's transitions; closing and cancelling need a `reason`, and cancelling after approval also needs the approver's capability, and cancelling is refused with `:goods_received` while any line has received quantity (reverse the receipts or close the order instead) |
 | `approve_order/4`, `return_order/4` | `supply-chain.purchasing.orders.approve` | Approves a submitted order, or returns it to draft with a `reason` (not an amended one) |
 | `amend_order/4` | `supply-chain.purchasing.orders.manage` | Records an amendment (`reason`, `lines`, optional header facts) on an approved or sent order; a change to any line sends the order back for approval |
 | `record_receipt/4` | `supply-chain.purchasing.orders.receive` | Adds received quantities to a sent order's lines, within the ordered quantity plus the `tolerance_percent` the caller states; a call names each line once |
@@ -113,7 +113,7 @@ Statuses and transitions:
 | `approved` | `cancelled` | `cancel_order/4`, also needing the approver's capability |
 | `sent` | `partially_received` | `record_receipt/4` |
 | `sent`, `partially_received` | `closed` | `close_order/4` with a reason, or `record_receipt/4` once every line is received in full |
-| `sent`, `partially_received` | `cancelled` | `cancel_order/4`, also needing the approver's capability |
+| `sent`, `partially_received` | `cancelled` | `cancel_order/4`, also needing the approver's capability, and only while no current line has received quantity above zero |
 | `closed` | `partially_received` | `reverse_receipt/4` with a reason, when a receipt against the order is reversed |
 
 `cancelled` is final; `closed` reopens only through a receipt reversal. Every
@@ -132,7 +132,7 @@ request link are fixed, and the header and lines change only as follows:
   so `get_order/3` shows the current lines and each amendment with the
   lines it added and the IDs of those it replaced, and `get_order_line/3`
   still reads a superseded line. A partially received order is not amended;
-  it is closed short or cancelled.
+  it is closed short, or cancelled once its receipts are reversed.
 
   An amendment is manage-only when it changes no line: a new `reference`,
   `notes`, or `expected_on` with the same lines (same description, item

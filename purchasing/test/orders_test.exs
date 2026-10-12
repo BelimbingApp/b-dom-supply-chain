@@ -977,6 +977,61 @@ defmodule Bilimbi.SupplyChain.Purchasing.OrdersTest do
     end
   end
 
+  describe "cancelling a received order" do
+    test "is refused while goods are received and allowed once every receipt is reversed",
+         context do
+      %{buyer: buyer, approver: approver} = context
+      order = sent(context)
+      [first, second] = order.lines
+
+      {:ok, %{status: "partially_received"}} =
+        Purchasing.record_receipt(buyer, 73, order.id, %{
+          lines: [%{line_id: first.id, quantity: "3"}, %{line_id: second.id, quantity: "1"}]
+        })
+
+      assert {:error, :goods_received} =
+               Purchasing.cancel_order(approver, 73, order.id, %{reason: "Dropped"})
+
+      {:ok, %{status: "partially_received"}} =
+        Purchasing.reverse_receipt(buyer, 73, order.id, %{
+          reason: "Wrong goods",
+          lines: [%{line_id: first.id, quantity: "3"}]
+        })
+
+      assert {:error, :goods_received} =
+               Purchasing.cancel_order(approver, 73, order.id, %{reason: "Dropped"})
+
+      {:ok, %{status: "partially_received"}} =
+        Purchasing.reverse_receipt(buyer, 73, order.id, %{
+          reason: "Wrong goods",
+          lines: [%{line_id: second.id, quantity: "1"}]
+        })
+
+      assert {:ok, %{status: "cancelled"}} =
+               Purchasing.cancel_order(approver, 73, order.id, %{reason: "Dropped"})
+    end
+
+    test "leaves a refused order open to a reversal", context do
+      %{buyer: buyer, approver: approver} = context
+      order = sent(context)
+      [first, _second] = order.lines
+
+      {:ok, _} =
+        Purchasing.record_receipt(buyer, 73, order.id, %{
+          lines: [%{line_id: first.id, quantity: "2"}]
+        })
+
+      assert {:error, :goods_received} =
+               Purchasing.cancel_order(approver, 73, order.id, %{reason: "Dropped"})
+
+      assert {:ok, %{status: "partially_received"}} =
+               Purchasing.reverse_receipt(buyer, 73, order.id, %{
+                 reason: "Damaged on arrival",
+                 lines: [%{line_id: first.id, quantity: "2"}]
+               })
+    end
+  end
+
   describe "reads" do
     test "filter by status and supplier, page by limit, and refuse a malformed option", context do
       %{buyer: buyer, approver: approver} = context

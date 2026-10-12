@@ -9,9 +9,12 @@ defmodule Bilimbi.SupplyChain.Receiving.Migrations.CreateReceiving do
   whatever the order becomes; nothing here references Purchasing's tables.
   Rows of one company reference each other through composite
   `(id, company_id)` foreign keys. The database numbers each company's
-  receipts 1, 2, 3, ... without gaps. Nothing is deleted: triggers refuse
-  DELETE and TRUNCATE on every table, and history rows and tolerance
-  settings are append-only, the current tolerance being the newest row.
+  receipts 1, 2, 3, ... without gaps. Nothing is deleted once posted:
+  triggers refuse DELETE and TRUNCATE on receipts, history rows, and
+  settings, and TRUNCATE on lines; history rows and tolerance settings are
+  append-only, the current tolerance being the newest row. A receipt's lines
+  are fixed once it is posted or cancelled, but a draft's lines are working
+  data and may be replaced.
 
   A receipt is free while it is a draft. Posting or cancelling it is the
   only change the trigger allows afterwards: a posted or cancelled receipt

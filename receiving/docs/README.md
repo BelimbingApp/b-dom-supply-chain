@@ -119,8 +119,10 @@ other writer can break them:
 - composite `(id, company_id)` foreign keys keep a receipt's lines, history,
   and reversal in one company; the order and order lines are referenced by
   ID with their facts copied, never by a foreign key into Purchasing;
-- triggers refuse DELETE and TRUNCATE on every table and UPDATE on history
-  rows and settings;
+- triggers refuse DELETE and TRUNCATE on receipts, history rows, and
+  settings, TRUNCATE on lines, and UPDATE on history rows and settings; a
+  draft's lines are working data and may be replaced, while a posted or
+  cancelled receipt's lines are fixed;
 - a trigger numbers each company's receipts without gaps and makes a new
   receipt a draft; triggers stamp history rows and settings;
 - a trigger allows only the transitions in the table above and refuses any
@@ -150,9 +152,11 @@ and proves the migration's own triggers outside the test sandbox.
   Base Audit records with its actor in the composed host.
 - **Immutability.** A posted receipt and its lines never change; a mistake
   is corrected by a reversal receipt that names it and carries its reason.
-- **Retention.** Nothing is deleted: the database refuses DELETE and
-  TRUNCATE, a draft is cancelled, settings changes are appended, and
-  unmounting Supply Chain keeps every row.
+- **Retention.** Nothing posted is deleted: the database refuses DELETE and
+  TRUNCATE on receipts, history, and settings, and any change to the lines of
+  a posted or cancelled receipt. A draft's lines are working data and may be
+  replaced until it is posted; a draft is cancelled, never deleted, settings
+  changes are appended, and unmounting Supply Chain keeps every row.
 - **Gapless numbering.** Each company's receipts are numbered in creation
   order without gaps; a refused or rolled-back creation takes none.
 - **Reproducible reports.** A posted receipt carries the order line's

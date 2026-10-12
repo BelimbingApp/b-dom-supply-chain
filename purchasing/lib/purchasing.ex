@@ -711,11 +711,19 @@ defmodule Bilimbi.SupplyChain.Purchasing do
   Cancels an order that is not closed or cancelled; a `reason` is required.
   Cancelling an order that was ever approved (approved, sent, partially
   received, or resubmitted by an amendment) also needs
-  `supply-chain.purchasing.orders.approve`.
+  `supply-chain.purchasing.orders.approve`. Goods recorded as received are
+  never cancelled away: while any current line has a received quantity above
+  zero the call is `{:error, :goods_received}`; reverse those receipts first
+  or close the order instead.
   """
   @spec cancel_order(Scope.t(), term(), term(), map()) ::
           {:ok, map()}
-          | {:error, write_refusal() | :order_not_found | transition_refusal() | Changeset.t()}
+          | {:error,
+             write_refusal()
+             | :order_not_found
+             | :goods_received
+             | transition_refusal()
+             | Changeset.t()}
   def cancel_order(%Scope{} = scope, company_id, order_id, attributes) when is_map(attributes) do
     write(scope, company_id, @manage_orders, fn ->
       with {:ok, order} <- locked_order(scope, company_id, order_id),
@@ -725,6 +733,7 @@ defmodule Bilimbi.SupplyChain.Purchasing do
                ~w(draft submitted approved sent partially_received),
                "cancelled"
              ),
+           :ok <- require_nothing_received(order),
            :ok <- authorize_cancellation(scope, company_id, order),
            {:ok, reason} <- required_reason(attributes) do
         transition_order(scope, order, "cancelled", reason, cancelled_at: DateTime.utc_now())
@@ -738,7 +747,7 @@ defmodule Bilimbi.SupplyChain.Purchasing do
   shape `create_order/3` takes), and applies any `reference`, `notes`, or
   `expected_on` given. The superseded lines stay on the order, marked with
   the amendment that replaced them, so the trail shows what was ordered
-  before. A partially received order is closed short or cancelled instead
+  before. A partially received order is closed short instead
   (`{:error, {:invalid_transition, status, "amended"}}`).
 
   An amendment that changes any line (its description, item reference,
@@ -866,6 +875,12 @@ defmodule Bilimbi.SupplyChain.Purchasing do
         end
       end)
     end
+  end
+
+  defp require_nothing_received(order) do
+    if Enum.any?(order.lines, &(Decimal.compare(&1.received_quantity, 0) == :gt)),
+      do: {:error, :goods_received},
+      else: :ok
   end
 
   # Cancelling after approval undoes an approver's decision, so it takes the
