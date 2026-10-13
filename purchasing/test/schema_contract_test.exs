@@ -1,17 +1,14 @@
-Code.require_file(
-  "../priv/repo/migrations/20261012210000_create_supply_chain_purchasing.exs",
-  __DIR__
-)
-
 defmodule Bilimbi.SupplyChain.Purchasing.SchemaContractTest do
   use ExUnit.Case, async: false
 
   alias Bilimbi.Base.Database.SchemaVerifier
   alias Bilimbi.Base.Repo
-  alias Bilimbi.SupplyChain.Purchasing.Migrations.CreatePurchasing
   alias Bilimbi.SupplyChain.Purchasing.SchemaContract
+  alias Bilimbi.SupplyChain.Purchasing.TestFixtures
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
+
+  @migrations SchemaContract.migrations()
 
   setup do
     # UUIDs keep fresh databases isolated across concurrent BEAM instances.
@@ -32,25 +29,23 @@ defmodule Bilimbi.SupplyChain.Purchasing.SchemaContractTest do
       )
     )
 
-    assert :ok =
-             Ecto.Migrator.up(Repo, SchemaContract.migration_version(), CreatePurchasing,
-               log: false,
-               dynamic_repo: repo
-             )
+    TestFixtures.migrations()
+
+    for {version, module} <- @migrations do
+      assert :ok = Ecto.Migrator.up(Repo, version, module, log: false, dynamic_repo: repo)
+    end
 
     %{repo: repo}
   end
 
-  test "the fresh migration implements the complete purchasing contract", %{repo: repo} do
+  test "the fresh migrations implement the complete purchasing contract", %{repo: repo} do
     assert :ok = SchemaVerifier.verify(repo, SchemaContract.tables())
   end
 
-  test "the migration rolls back", %{repo: repo} do
-    assert :ok =
-             Ecto.Migrator.down(Repo, SchemaContract.migration_version(), CreatePurchasing,
-               log: false,
-               dynamic_repo: repo
-             )
+  test "the migrations roll back", %{repo: repo} do
+    for {version, module} <- Enum.reverse(@migrations) do
+      assert :ok = Ecto.Migrator.down(Repo, version, module, log: false, dynamic_repo: repo)
+    end
 
     %{rows: [[0]]} =
       SQL.query!(
@@ -61,11 +56,11 @@ defmodule Bilimbi.SupplyChain.Purchasing.SchemaContractTest do
   end
 
   # The module's other suites prove these rules on temporary copies of the
-  # tables; this proves the migration itself carries them, outside a sandbox,
-  # where the deferred history checks run at commit. A refused commit
-  # disconnects, which Postgrex logs; the log is expected.
+  # tables; this proves the migrations themselves carry them, outside a
+  # sandbox, where the deferred history checks run at commit. A refused
+  # commit disconnects, which Postgrex logs; the log is expected.
   @tag :capture_log
-  test "the migration's triggers number, audit, and freeze orders", %{repo: repo} do
+  test "the migrations' triggers number, audit, and freeze orders", %{repo: repo} do
     Repo.put_dynamic_repo(repo)
     query! = fn sql -> SQL.query!(repo, sql, []) end
 

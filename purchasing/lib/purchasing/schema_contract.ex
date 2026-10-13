@@ -4,14 +4,24 @@ defmodule Bilimbi.SupplyChain.Purchasing.SchemaContract do
 
   Not registered in the descriptor: compatibility verification runs before
   pending Bilimbi-only migrations, when these tables correctly do not exist.
-  `test/schema_contract_test.exs` verifies it against the migration.
+  `test/schema_contract_test.exs` verifies it against the migrations.
   """
   @behaviour Bilimbi.Base.Database.SchemaContract
 
   # Check and predicate text is PostgreSQL's canonical form, which the
   # verifier compares after removing whitespace and parentheses.
 
-  def migration_version, do: 20_261_012_210_000
+  @doc """
+  The module's migrations as `{version, module}` in version order; the
+  contract describes the schema after the last one. The modules are loaded
+  from their files by the callers that run them.
+  """
+  def migrations do
+    [
+      {20_261_012_210_000, Bilimbi.SupplyChain.Purchasing.Migrations.CreatePurchasing},
+      {20_261_013_100_000, Bilimbi.SupplyChain.Purchasing.Migrations.AllowReceiptReversal}
+    ]
+  end
 
   @impl true
   def tables do
@@ -319,7 +329,7 @@ defmodule Bilimbi.SupplyChain.Purchasing.SchemaContract do
           "supply_chain_purchasing_order_lines_quantity" => check("quantity > (0)::numeric"),
           "supply_chain_purchasing_order_lines_unit_price" => check("unit_price >= (0)::numeric"),
           "supply_chain_purchasing_order_lines_received_quantity" =>
-            check("received_quantity >= (0)::numeric AND received_quantity <= quantity"),
+            check("received_quantity >= (0)::numeric"),
           "supply_chain_purchasing_order_lines_tax" =>
             check(
               "(tax_code_id IS NULL AND tax_rate IS NULL) OR (tax_code_id IS NOT NULL " <>

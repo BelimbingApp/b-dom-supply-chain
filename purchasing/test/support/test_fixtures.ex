@@ -3,11 +3,11 @@ defmodule Bilimbi.SupplyChain.Purchasing.TestFixtures do
   Purchasing tables, authorization, and two tenants' companies for module
   tests.
 
-  The tables are temporary copies of the migration's, constraints and
-  triggers included, built from the same `statements/1` the migration runs,
-  so a test that makes PostgreSQL refuse proves the migration's rule and
+  The tables are temporary copies of the migrations', constraints and
+  triggers included, built from the same `statements/1` each migration
+  runs, so a test that makes PostgreSQL refuse proves a migration's rule and
   the two cannot drift. `test/schema_contract_test.exs` checks the real
-  migration against the schema contract in a fresh database.
+  migrations against the schema contract in a fresh database.
   """
 
   alias Bilimbi.Base.Authz
@@ -22,10 +22,7 @@ defmodule Bilimbi.SupplyChain.Purchasing.TestFixtures do
   alias Bilimbi.SupplyChain.Purchasing
   alias Ecto.Adapters.SQL
 
-  @migration Path.expand(
-               "../../priv/repo/migrations/20261012210000_create_supply_chain_purchasing.exs",
-               __DIR__
-             )
+  @migrations_path Path.expand("../../priv/repo/migrations", __DIR__)
 
   @view "supply-chain.purchasing.view"
   @configure "supply-chain.purchasing.configuration.manage"
@@ -113,18 +110,29 @@ defmodule Bilimbi.SupplyChain.Purchasing.TestFixtures do
     SQL.query!(Repo, "SET CONSTRAINTS ALL IMMEDIATE", [])
   end
 
-  @doc "Temporary copies of the migration's tables, constraints, and triggers."
+  @doc """
+  Temporary copies of the tables, constraints, and triggers, as every
+  migration leaves them in version order.
+  """
   def create_purchasing_tables! do
-    Enum.each(apply(migration(), :statements, [:temporary]), &SQL.query!(Repo, &1, []))
+    for migration <- migrations(),
+        statement <- apply(migration, :statements, [:temporary]),
+        do: SQL.query!(Repo, statement, [])
+
+    :ok
   end
 
   @doc """
-  The migration module, loaded from its file once. It is not compiled into
-  the test build, so callers reach it with `apply/3`.
+  The migration modules in version order, as `SchemaContract.migrations/0`
+  names them, loaded from their files. They are not compiled into the test
+  build, so callers reach them with `apply/3`.
   """
-  def migration do
-    Code.require_file(@migration)
-    Bilimbi.SupplyChain.Purchasing.Migrations.CreatePurchasing
+  def migrations do
+    for {version, module} <- Purchasing.SchemaContract.migrations() do
+      [file] = Path.wildcard(Path.join(@migrations_path, "#{version}_*.exs"))
+      Code.require_file(file)
+      module
+    end
   end
 
   @doc "A supplier of the company, with any attribute overridden."
