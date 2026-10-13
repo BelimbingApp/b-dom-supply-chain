@@ -30,7 +30,7 @@ defmodule Bilimbi.SupplyChain.Receiving.TestFixtures do
   @view "supply-chain.receiving.view"
   @configure "supply-chain.receiving.configuration.manage"
   @manage "supply-chain.receiving.receipts.manage"
-  @post "supply-chain.receiving.receipts.post"
+  @post "supply-chain.receiving.receipts.post-receipt"
 
   @doc "Every receiving capability, as a test grants them all at once."
   def all_capabilities, do: [@view, @configure, @manage, @post]

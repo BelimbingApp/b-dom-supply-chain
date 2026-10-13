@@ -13,7 +13,7 @@ defmodule BilimbiWeb.SupplyChainReceiptsLiveTest do
   @view "supply-chain.receiving.view"
   @configure "supply-chain.receiving.configuration.manage"
   @manage "supply-chain.receiving.receipts.manage"
-  @post "supply-chain.receiving.receipts.post"
+  @post "supply-chain.receiving.receipts.post-receipt"
 
   @purchasing_view "supply-chain.purchasing.view"
   @purchasing_configure "supply-chain.purchasing.configuration.manage"
