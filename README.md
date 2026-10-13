@@ -54,9 +54,8 @@ underscores, so `b-dom-supply-chain` mounts at `apps/domains/supply_chain`.
 CI checks out Bilimbi at the revision in
 [`.github/bilimbi-revision`](.github/bilimbi-revision), mounts this
 repository, and runs Bilimbi's precommit over the composed workspace. Bump that
-revision to build against a newer Platform. A second job runs the same
-precommit with Supply Chain absent, and
-[`missing_dependency.sh`](.github/scripts/missing_dependency.sh) proves a
+revision to build against a newer Platform. The last step runs
+[`missing_dependency.sh`](.github/scripts/missing_dependency.sh), which proves a
 mounted dependent without Supply Chain fails composition.
 
 ## License
