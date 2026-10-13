@@ -4,7 +4,7 @@ defmodule Bilimbi.SupplyChain.Receiving.Web.ReceiptLive do
   status history, with the actions its status allows. Viewing needs
   `supply-chain.receiving.view`; cancelling a draft needs
   `supply-chain.receiving.receipts.manage`, posting it or reversing a posted
-  receipt needs `supply-chain.receiving.receipts.post`, and the facade
+  receipt needs `supply-chain.receiving.receipts.post-receipt`, and the facade
   checks the capability again when each runs. Every action waits for
   confirmation, because none can be undone from this page.
   """
@@ -16,7 +16,7 @@ defmodule Bilimbi.SupplyChain.Receiving.Web.ReceiptLive do
   alias Bilimbi.SupplyChain.Receiving.Web.Refusals
 
   @manage "supply-chain.receiving.receipts.manage"
-  @post "supply-chain.receiving.receipts.post"
+  @post "supply-chain.receiving.receipts.post-receipt"
   @write_events ~w(transition confirm)
 
   @impl true

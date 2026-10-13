@@ -20,8 +20,8 @@ maps; the schemas are private. Attributes take atom or string keys.
 | `list_receipts/3`, `get_receipt/3`, `find_receipt_by_number/3` | `supply-chain.receiving.view` | Receipts with lines, by `status`, `order_id`, `limit`; the single reads add history and the reversal links |
 | `create_receipt/3`, `update_receipt/4` | `supply-chain.receiving.receipts.manage` | A draft against a sent or partially received order: `order_id`, `received_on`, `supplier_reference`, `notes`, `lines` |
 | `cancel_receipt/4` | `supply-chain.receiving.receipts.manage` | Cancels a draft with a `reason`; it keeps its number |
-| `post_receipt/3` | `supply-chain.receiving.receipts.post` | Posts a draft: records the accepted quantities on the order, fixes the receipt |
-| `reverse_receipt/4` | `supply-chain.receiving.receipts.post` | Posts a reversal of a posted receipt with a `reason`, taking the goods back off the order |
+| `post_receipt/3` | `supply-chain.receiving.receipts.post-receipt` | Posts a draft: records the accepted quantities on the order, fixes the receipt |
+| `reverse_receipt/4` | `supply-chain.receiving.receipts.post-receipt` | Posts a reversal of a posted receipt with a `reason`, taking the goods back off the order |
 | `order_receipts/3`, `order_line_receipts/3` | `supply-chain.receiving.view` | Net received and rejected quantities per order line from posted receipts, for three-way matching |
 | `list_postings/3` | `supply-chain.receiving.view` | Postings in order, each read once by `after_posting_id`; the stock seam |
 

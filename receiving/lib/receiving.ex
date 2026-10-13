@@ -45,7 +45,7 @@ defmodule Bilimbi.SupplyChain.Receiving do
   @view "supply-chain.receiving.view"
   @configure "supply-chain.receiving.configuration.manage"
   @manage "supply-chain.receiving.receipts.manage"
-  @post "supply-chain.receiving.receipts.post"
+  @post "supply-chain.receiving.receipts.post-receipt"
 
   @default_limit 100
   @max_limit 500
